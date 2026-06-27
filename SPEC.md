@@ -43,6 +43,8 @@ reused (hcom); the dashboard is the thing being built.
 | 9 | Stack | **Go + Bubble Tea** | Built for dense lazygit-style TUIs; the closest competitors are Go; I/O-bound so Rust's tax buys nothing |
 | 10 | Process model | **Standalone TUI + detached tmux session** | Dashboard is a disposable viewer — its crash/restart must never touch running agents. Reopen re-attaches. |
 | 11 | Answer propagation | **Direct-to-agent by default, one key to broadcast as a decision** | The requirement is sharing *decisions*, not every clarification. Auto-broadcast wakes+bills every agent on every keystroke. |
+| 12 | In-room layout | **TILED** — open a room → every agent's hcom chat side-by-side; focus one, type → `hcom send`; one key broadcasts | Resolved by prototype (2026-06-27). Dashboard is the *message* surface; raw tool output stays in tmux (`Enter → attach`, dec. 10). No transcript parser / terminal emulator. |
+| 13 | Spawn surface | **`omni up <room>` (folder-of-briefs) + `omni spawn <room> <role> [brief]`** | Agents are dynamic: start any agent into a live room. `omni spawn` is a single CLI an orchestrating Claude can shell out to when prompted. Dashboard already shows new rows live (polls state.db). |
 
 ---
 
@@ -132,7 +134,8 @@ A standalone session launched in **no room** gets status hooks but **no
 
 ## Deferred (YAGNI / taste — not forgotten)
 
-- Screen layout + keybindings — resolve with a throwaway prototype, not on paper.
+- ~~Screen layout + keybindings~~ — **resolved 2026-06-27** (decision 12: TILED
+  in-room chat; `proto/dashboard` prototype). Keybindings settle as the real view lands.
 - Room teardown / "done" lifecycle + cleanup.
 - Decision-log replay to catch up a restarted or late-joining agent (data's
   already there as tagged broadcasts).
