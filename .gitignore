@@ -5,3 +5,5 @@
 
 # build artifacts
 /dashboard
+/omniscience
+/.claude/worktrees/
