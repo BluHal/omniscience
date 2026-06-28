@@ -1,109 +1,162 @@
-# Omniscience (`omni`)
+<div align="center">
 
-> One all-seeing view over every Claude Code agent, everywhere.
+# Omniscience
 
-A lazygit-style terminal dashboard to launch, monitor, and steer parallel
-Claude Code agents across projects — with isolated **rooms** where agents on one
-feature chat with each other (via [hcom](https://github.com/aannoo/hcom)) while
-unrelated projects stay separate.
+**One all-seeing view over every Claude Code agent, everywhere.**
 
-```
-  OMNISCIENCE
+A terminal dashboard that runs and watches many **live, interactive Claude Code
+sessions side by side** — across the same or different projects — with isolated
+groups where agents collaborate over a shared message bus.
 
-  ● backend      feature-x  blocked                      4s
-    frontend     feature-x  working   · Edit             1s
-    api          payments   working   · Bash             9s
-    docs                    idle                          3m
+Each tile is a *real embedded terminal*: you see Claude's native TUI and type
+straight into it. No transcript scraping, no separate windows — the dashboard
+draws the whole screen itself and hosts the sessions inside it.
 
-  q quit
-```
+![Omni Console — hero](docs/screenshots/hero.png)
 
-*(`●` = blocked, needs you now — floats to the top. No room = monitored but mute.)*
+<sub>Built with Rust ·
+<a href="https://github.com/ratatui/ratatui">ratatui</a> ·
+<a href="https://github.com/a-kenji/tui-term">tui-term</a> ·
+<a href="https://github.com/doy/vt100-rust">vt100</a> ·
+<a href="https://docs.rs/portable-pty">portable-pty</a></sub>
+
+</div>
+
+---
 
 ## Why
 
-The native tools each cover a slice — [Agent View](https://code.claude.com/docs/en/agent-view)
-unifies one orchestration, [Agent Teams](https://code.claude.com/docs/en/agent-teams)
-gives a message bus, [claude-squad](https://github.com/smtg-ai/claude-squad) /
-[VibeMux](https://github.com/UgOrange/vibemux) wrap sessions in a TUI — but none
-gives *one* cross-project view where agents on a shared feature collaborate and
-everything else stays isolated. That's the wedge. The bus is reused (hcom); the
-dashboard is the thing being built. Full landscape and rationale: **[SPEC.md](SPEC.md)**.
+Plenty of tools manage terminal sessions or Claude instances; none did all of
+this the way I wanted:
 
-## Highlights
+- **Cross-project.** Watch agents on unrelated repos in one place, not one
+  orchestration at a time.
+- **Live, not a monitor.** The tile *is* the session — drive Claude from inside
+  the dashboard, don't just read its status.
+- **Rooms that enforce isolation.** Agents on a shared feature collaborate on a
+  private bus; unrelated projects stay mute to each other.
+- **Built exactly my way** — a personal daily-driver, lazygit-style.
 
-- **Cross-project overview** — every agent you launched, live status in one screen.
-- **Blocked-agent triage** — `Notification` hooks float "needs me now" to the top.
-- **Rooms** — a folder of briefs becomes a team of agents on an isolated bus;
-  agents in different rooms (or no room) can't talk to each other.
-- **Disposable viewer** — the dashboard is just a reader of `state.db`. Close it
-  or crash it; agents keep running in a detached tmux session. Reopen to re-attach.
+## Features
 
-## Status
+- 🪟 **Live embedded terminals** — every tile runs a real `claude` in its own
+  PTY (parsed by `vt100`, rendered with `tui-term`); type into the focused one.
+- 🧩 **Groups** — a *Lead* session plus the agents it spawns, drawn as nested
+  tiles in one frame. A group can span multiple repos.
+- 🚦 **Status at a glance** — Claude hooks write `working / blocked / idle /
+  done` to `state.db`; blocked agents float to the front and light up red.
+- 📡 **Shared bus + broadcast** — each group gets an isolated [hcom](https://github.com/aannoo/hcom)
+  bus so agents talk; one key broadcasts a decision to the whole group.
+- 🌱 **Dynamic spawn** — a Lead delegates with `omni spawn`, and the new agent
+  appears live as a tile in its group, no restart.
+- 🔭 **Glance mode** — collapse every tile to a compact card to keep an eye on
+  the whole board.
+- 🔎 **Project picker** — a fuzzy finder over the git repos under your home.
 
-`omni up <room>` and `omni spawn <room> <role> [brief]` spawn agents wired to
-status hooks (`~/.omni/state.db`) **and** each room's isolated hcom bus. `omni`
-(no args) is the live dashboard: a room-grouped overview, an in-room TILED chat
-read off the bus, Enter-to-attach into an agent's tmux, and send/broadcast back
-to agents. See [SPEC.md](SPEC.md) for the design and remaining § Deferred items.
+## Install
 
-## Prerequisites
+Requires a [Rust toolchain](https://rustup.rs) and [`hcom`](https://github.com/aannoo/hcom)
+(`brew install aannoo/hcom/hcom`) for the inter-agent bus.
 
-Go 1.26+, `tmux`, an authenticated `claude` CLI, and
-[`hcom`](https://github.com/aannoo/hcom) (`brew install aannoo/hcom/hcom`) for
-the per-room message bus.
-
-## Build
-
-```
-go build -o omni .
-```
-
-## Use
-
-A room is a folder of brief markdown files — one agent per file, `role` = filename,
-brief = the file's contents:
-
-```
-.omni/feature-x/
-  frontend.md
-  backend.md
+```sh
+git clone https://github.com/BluHal/omniscience
+cd omniscience
+cargo install --path .     # installs `omni` to ~/.cargo/bin
 ```
 
-```
-omni up feature-x                 # spawn one claude agent per brief on an isolated hcom bus
-omni spawn feature-x reviewer      # add one more agent to the live room (optional brief: path or inline)
-omni                              # live dashboard
-tmux attach -t omni              # drop into the agents directly
+Run it in a real terminal:
+
+```sh
+omni
 ```
 
-In the dashboard: `↑↓` move, `enter` opens a room. Inside a room the agents
-render TILED (each one's chat side-by-side): `←→` focus an agent, type + `enter`
-sends direct to it, `ctrl+b` broadcasts to the whole room as a tagged decision,
-`enter` on an empty line attaches to that agent's tmux, `esc` backs out.
+## Usage
+
+Open a project with `^n`, pick a repo, and Claude starts live in a tile. Press
+`i` to type into it, `^\` to step back out to navigation.
+
+| Key | Action |
+|-----|--------|
+| `^n` | **new project** — fuzzy picker over git repos under `~`, opens Claude in a tile |
+| `i` / `⏎` | **type** into the focused tile (insert mode) |
+| `^\` | back to **nav** mode |
+| `↹` · arrows | move **focus** between tiles |
+| `^b` | **broadcast** a decision to the focused tile's group (type, `⏎` to send) |
+| `z` | **glance** mode (compact keep-an-eye cards) |
+| `!` | **jump** to a blocked agent |
+| `?` | help · `q` quit |
+
+On the empty screen, `⏎` resumes your most recent project.
+
+### Spawning collaborators
+
+A Lead is launched knowing it can grow its own group at runtime:
+
+```sh
+omni spawn <room> <role> [--dir <path>] [brief]
+```
+
+Running this from inside a Lead (Claude shells out to it) queues an agent that
+the dashboard picks up and opens as a new tile in that group, wired to the same
+hcom bus. `--dir` places the agent in **another repo** while keeping it on the
+group's shared bus (cross-repo groups). Answer a blocked agent by typing in its
+tile; share a decision with everyone via `^b`.
+
+## Screens
+
+| Hero | Glance | Picker |
+|------|--------|--------|
+| ![hero](docs/screenshots/hero.png) | ![glance](docs/screenshots/glance.png) | ![picker](docs/screenshots/picker.png) |
 
 ## How it works
 
 ```
-  omni TUI (Go + Bubble Tea)         standalone, disposable
-        │ reads
-        ▼
-  ~/.omni/state.db  ◀── omni status hooks ──  agents in detached tmux session "omni"
+            ┌──────────────────────────────┐
+            │  omni — Rust/ratatui          │  bespoke compositor, owns the PTYs
+            │  ┌────────┐ ┌────────┬───────┐│
+            │  │ lead   │ │ lead   │ agent ││  each tile = a live `claude` PTY
+            │  └────────┘ └────────┴───────┘│
+            └──────┬───────────────┬────────┘
+        CC hooks   │               │   CC hooks + hcom hooks
+                   ▼               ▼
+   ~/.omni/state.db (status, ALL)   .omni/<room>/.hcom (chat, roomed)
 ```
 
-`omni up` launches a plain (user-authed) `claude` per brief in its own tmux
-window, injecting omni's status hooks via `--settings` so your global/project
-config is never touched. Each hook event updates one row of `state.db`:
+Two data layers:
 
-| Hook | Effect on the agent's row |
-|---|---|
-| `SessionStart` | `working` |
-| `PreToolUse` | `current_activity = <tool>`, `working` |
-| `Notification` | `blocked` — the "needs me now" signal |
-| `Stop` | `idle` |
-| `SessionEnd` | `done` |
+- **`state.db`** (`~/.omni`) — one row per session, updated by omni's own Claude
+  hooks (`omni hook <event>`). The dashboard polls it for live status.
+- **per-group hcom bus** (`.omni/<room>/.hcom`) — the agent↔agent chat and
+  decision broadcasts, surfaced when a room is open.
 
-The TUI is a 500ms poll over that one table — its entire cross-project view is a
-single query. Opening a room adds a second poll over that room's hcom db
-(`.omni/<room>/.hcom`) for the TILED chat; sending shells out to `hcom send`.
-Architecture diagram and the per-room chat layer: **[SPEC.md](SPEC.md)**.
+The visual system follows the Claude Design *"Terminal Dashboard UI System"*
+handoff. Design and engineering decisions are recorded as ADRs in
+[docs/adr/](docs/adr/); the domain glossary is in [CONTEXT.md](CONTEXT.md).
+
+## Project layout
+
+```
+src/          Rust source (compositor, terminals, state, launch)
+docs/adr/     architecture decision records
+CONTEXT.md    domain glossary
+```
+
+## Roadmap
+
+- [x] Live embedded terminals, groups, focus/insert
+- [x] Status via hooks → `state.db` (blocked/idle/done)
+- [x] hcom bus, broadcast, dynamic `omni spawn`
+- [x] Home-wide git-repo project picker (with recents + fuzzy highlight)
+- [x] Cross-repo groups (`omni spawn --dir`), glance mode, help, resume-last
+- [ ] **Persistence across restarts** — omni currently owns the PTYs
+  in-process, so quitting ends the sessions. A detach/daemon split (PTY host +
+  TUI client) is the next milestone — see
+  [ADR-0003](docs/adr/0003-rust-compositor-embedded-ptys.md).
+
+## Prior art
+
+[Claude Agent Teams](https://code.claude.com/docs/en/agent-teams) ·
+[hcom](https://github.com/aannoo/hcom) ·
+[Recon](https://agent-wars.com/news/2026-03-14-recon-tmux-tui-claude-code-sessions) ·
+[VibeMux](https://github.com/UgOrange/vibemux) ·
+[claude-squad](https://github.com/smtg-ai/claude-squad)
