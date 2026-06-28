@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -111,6 +112,7 @@ type chatLoadedMsg struct {
 	rows []chatEntry
 	err  error
 }
+type attachDoneMsg struct{ err error }
 
 func (m tuiModel) Init() tea.Cmd { return tea.Batch(refresh(m.db), tick()) }
 
@@ -160,6 +162,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	case chatLoadedMsg:
 		m.chat, m.chatErr = msg.rows, msg.err
+	case attachDoneMsg:
+		m.err = msg.err // nil on clean detach; surfaced if tmux attach failed
 	case sessionsMsg:
 		m.err = msg.err
 		// Keep selection stable across the regroup: remember what's selected,
@@ -199,8 +203,8 @@ func (m tuiModel) keyRooms(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // keyInRoom handles keys while a room is open. Focus moves between agent columns
-// with the arrows; esc returns to the rooms list. (Compose/send #6 and tmux
-// attach #4 add their keys here.)
+// with the arrows; enter drops into the focused agent's tmux window (issue #4);
+// esc returns to the rooms list. (Compose/send #6 adds its keys here.)
 func (m tuiModel) keyInRoom(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "ctrl+c":
@@ -208,6 +212,8 @@ func (m tuiModel) keyInRoom(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.inRoom = false
 		m.chat, m.chatErr = nil, nil
+	case "enter":
+		return m, m.attachFocused()
 	case "up", "left":
 		m.agtCur--
 	case "down", "right":
@@ -215,6 +221,33 @@ func (m tuiModel) keyInRoom(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clamp()
 	return m, nil
+}
+
+// attachFocused drops the dashboard into the focused agent's live tmux window,
+// lazygit-style: tea.ExecProcess suspends Bubble Tea and hands the terminal to
+// tmux; detaching (Ctrl-b d) resumes the dashboard with state intact. The agent
+// keeps running in the detached "omni" session throughout — attach never touches
+// it. Works for no-room agents too (they have a window like any other).
+func (m tuiModel) attachFocused() tea.Cmd {
+	a := m.focusedAgent()
+	if a == nil || a.TmuxPane == "" {
+		return nil // row not yet wired to a pane; nothing to attach to
+	}
+	// select the agent's window first, then attach to it (one tmux client).
+	c := exec.Command("tmux", "select-window", "-t", a.TmuxPane, ";", "attach", "-t", tmuxSession)
+	return tea.ExecProcess(c, func(err error) tea.Msg { return attachDoneMsg{err} })
+}
+
+// focusedAgent is the agent under the cursor in the open room, or nil.
+func (m tuiModel) focusedAgent() *session {
+	if !m.inRoom || m.roomCur >= len(m.rooms) {
+		return nil
+	}
+	r := m.rooms[m.roomCur]
+	if m.agtCur >= len(r.agents) {
+		return nil
+	}
+	return &r.agents[m.agtCur]
 }
 
 // restore re-points the cursors at the previously selected room/agent by name
@@ -347,7 +380,7 @@ func (m tuiModel) viewRoom(b *strings.Builder) {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n  ←→/↑↓ focus agent · esc back · q quit\n")
+	b.WriteString("\n  ←→/↑↓ focus agent · enter attach · esc back · ctrl+c quit\n")
 }
 
 // chatLines renders one column's message body: broadcasts (◆) and directs for
