@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -101,6 +102,7 @@ type tuiModel struct {
 	width, height int
 	chat          []chatEntry // open room's hcom messages (read live)
 	chatErr       error
+	compose       string // in-room message being typed (issue #6)
 }
 
 type tickMsg time.Time
@@ -113,6 +115,7 @@ type chatLoadedMsg struct {
 	err  error
 }
 type attachDoneMsg struct{ err error }
+type sentMsg struct{ err error }
 
 func (m tuiModel) Init() tea.Cmd { return tea.Batch(refresh(m.db), tick()) }
 
@@ -164,6 +167,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat, m.chatErr = msg.rows, msg.err
 	case attachDoneMsg:
 		m.err = msg.err // nil on clean detach; surfaced if tmux attach failed
+	case sentMsg:
+		m.err = msg.err // nil on success; the sent message shows on the next poll
 	case sessionsMsg:
 		m.err = msg.err
 		// Keep selection stable across the regroup: remember what's selected,
@@ -202,25 +207,115 @@ func (m tuiModel) keyRooms(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// keyInRoom handles keys while a room is open. Focus moves between agent columns
-// with the arrows; enter drops into the focused agent's tmux window (issue #4);
-// esc returns to the rooms list. (Compose/send #6 adds its keys here.)
+// keyInRoom handles keys while a room is open. Arrows move focus between agent
+// columns; typing composes a message; enter sends it direct to the focused agent
+// (issue #6) or, when nothing is typed, drops into that agent's tmux (issue #4);
+// ctrl+b broadcasts the composed message to the room as a decision (issue #6);
+// esc clears the compose or returns to the rooms list.
 func (m tuiModel) keyInRoom(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc":
+		if m.compose != "" {
+			m.compose = ""
+			return m, nil
+		}
 		m.inRoom = false
 		m.chat, m.chatErr = nil, nil
 	case "enter":
-		return m, m.attachFocused()
+		if m.compose != "" {
+			cmd := m.composeCmd(false)
+			m.compose = ""
+			return m, cmd
+		}
+		return m, m.attachFocused() // empty compose → drill into tmux (#4)
+	case "ctrl+b":
+		if m.compose != "" {
+			cmd := m.composeCmd(true)
+			m.compose = ""
+			return m, cmd
+		}
+	case "backspace":
+		if r := []rune(m.compose); len(r) > 0 {
+			m.compose = string(r[:len(r)-1])
+		}
 	case "up", "left":
 		m.agtCur--
 	case "down", "right":
 		m.agtCur++
+	default:
+		// Only the no-room bucket has no bus; there, swallow typing so enter
+		// stays "attach" rather than a dead compose.
+		if roomHcomDir(m.rooms[m.roomCur]) == "" {
+			break
+		}
+		switch k.Type {
+		case tea.KeySpace:
+			m.compose += " "
+		case tea.KeyRunes:
+			m.compose += string(k.Runes)
+		}
 	}
 	m.clamp()
 	return m, nil
+}
+
+// composeCmd builds the send for the typed message: direct to the focused agent
+// (SPEC decision 11 default) or, when broadcast, to the whole room as a tagged
+// decision. Returns nil for a room with no bus (the no-room bucket) or an empty
+// message. The actual hcom shell-out and identity resolution run off the UI
+// thread inside the returned command.
+func (m tuiModel) composeCmd(broadcast bool) tea.Cmd {
+	dir := roomHcomDir(m.rooms[m.roomCur])
+	if dir == "" || strings.TrimSpace(m.compose) == "" {
+		return nil
+	}
+	if broadcast {
+		return broadcastCmd(dir, m.compose)
+	}
+	a := m.focusedAgent()
+	if a == nil {
+		return nil
+	}
+	return sendDirectCmd(dir, a.Role, m.compose)
+}
+
+// sendDirectCmd delivers a message straight to one agent: hcom wakes it at its
+// next turn boundary, so a blocked agent that gets an answer continues — its
+// hooks then flip its state.db status back to working, which the poll reflects.
+// The recipient's exact bus identity is resolved at send time.
+func sendDirectCmd(hcomDir, role, text string) tea.Cmd {
+	return func() tea.Msg {
+		target := "@" + role // fallback if the agent hasn't registered yet
+		if n := resolveAgentName(hcomDir, role); n != "" {
+			target = "@" + n
+		}
+		return sentMsg{hcomSend(hcomDir, target, text)}
+	}
+}
+
+// broadcastCmd sends to every agent in the room, tagged as a decision (SPEC
+// decision 11) — the per-room decision log. The read view marks these with ◆;
+// the DECISION: prefix tags them in the agents' inboxes too.
+func broadcastCmd(hcomDir, text string) tea.Cmd {
+	return func() tea.Msg { return sentMsg{hcomSend(hcomDir, "", "DECISION: "+text)} }
+}
+
+// hcomSend shells out to deliver one message on a room's bus; target "" is a
+// broadcast. The sender is the external identity "omni".
+func hcomSend(hcomDir, target, text string) error {
+	args := []string{"send", "--from", "omni"}
+	if target != "" {
+		args = append(args, target)
+	}
+	args = append(args, "--", text)
+	c := exec.Command("hcom", args...)
+	c.Env = append(os.Environ(), "HCOM_DIR="+hcomDir)
+	if out, err := c.CombinedOutput(); err != nil {
+		return fmt.Errorf("hcom send: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // attachFocused drops the dashboard into the focused agent's live tmux window,
@@ -380,7 +475,14 @@ func (m tuiModel) viewRoom(b *strings.Builder) {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n  ←→/↑↓ focus agent · enter attach · esc back · ctrl+c quit\n")
+	// Compose line + keys. A room with a bus can send (#6); the no-room bucket
+	// can only attach (#4).
+	if r.name != noRoom {
+		fmt.Fprintf(b, "\n  → %s: %s▌\n", r.agents[m.agtCur].Role, m.compose)
+		b.WriteString("  enter send · ctrl+b broadcast · enter(empty) attach · ←→ focus · esc back/clear · ^c quit\n")
+	} else {
+		b.WriteString("\n  ←→/↑↓ focus agent · enter attach · esc back · ^c quit\n")
+	}
 }
 
 // chatLines renders one column's message body: broadcasts (◆) and directs for

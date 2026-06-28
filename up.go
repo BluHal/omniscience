@@ -56,7 +56,7 @@ func up(room string) error {
 	for _, brief := range briefs {
 		role := strings.TrimSuffix(brief, ".md")
 		briefPath := filepath.Join(roomDir, brief)
-		prompt := launchPrompt(fmt.Sprintf("read your brief at %s and begin working on it.", briefPath))
+		prompt := launchPrompt(role, fmt.Sprintf("read your brief at %s and begin working on it.", briefPath))
 		id, pane, err := spawnAgent(db, room, role, projectPath, dbp, settingsPath, hcomDir, prompt)
 		if err != nil {
 			return err
@@ -86,7 +86,7 @@ func spawn(room, role, brief string) error {
 	if err != nil {
 		return err
 	}
-	prompt := launchPrompt(spawnBody(role, brief))
+	prompt := launchPrompt(role, spawnBody(role, brief))
 	id, pane, err := spawnAgent(db, room, role, projectPath, dbp, settingsPath, hcomDir, prompt)
 	if err != nil {
 		return err
@@ -168,8 +168,10 @@ func spawnAgent(db *sql.DB, room, role, projectPath, dbp, settingsPath, hcomDir,
 // launchPrompt prepends the hcom self-join to an agent's first instruction.
 // Plain claude + hcom hooks does NOT auto-join, so every launched agent must run
 // `hcom start` once (pre-approved by the merged settings) for a name + inbox.
-func launchPrompt(body string) string {
-	return "First run: hcom start   (joins your team message bus). Then " + body
+// `--as <role>` pins the agent's bus identity to its omni role, so the dashboard
+// can address it and attribute its messages (HCOM_TAG=<role> is the backstop).
+func launchPrompt(role, body string) string {
+	return fmt.Sprintf("First run: hcom start --as %s   (joins your team message bus). Then %s", role, body)
 }
 
 // writeHookSettings emits a single --settings file carrying BOTH omni's status

@@ -20,14 +20,22 @@ type chatEntry struct {
 	toRoles   []string // resolved recipient roles (direct messages only)
 }
 
-// roomHcomDB returns the path to a room's hcom message db, or "" if the room has
-// no bus — the "(no room)" bucket (monitored-but-mute) or an empty room. Each
-// room's agents share a project_path; the bus is co-located under it.
-func roomHcomDB(r room) string {
+// roomHcomDir returns a room's isolated hcom bus directory (HCOM_DIR), or "" if
+// the room has no bus — the "(no room)" bucket (monitored-but-mute) or an empty
+// room. Each room's agents share a project_path; the bus is co-located under it.
+func roomHcomDir(r room) string {
 	if r.name == noRoom || len(r.agents) == 0 {
 		return ""
 	}
-	return filepath.Join(r.agents[0].ProjectPath, ".omni", r.name, ".hcom", "hcom.db")
+	return filepath.Join(r.agents[0].ProjectPath, ".omni", r.name, ".hcom")
+}
+
+// roomHcomDB returns the path to a room's hcom message db, or "" if no bus.
+func roomHcomDB(r room) string {
+	if d := roomHcomDir(r); d != "" {
+		return filepath.Join(d, "hcom.db")
+	}
+	return ""
 }
 
 // loadChat reads a room's hcom messages, resolving each hcom identity to its
@@ -99,6 +107,37 @@ func nameResolver(db *sql.DB) func(string) string {
 		}
 		return name
 	}
+}
+
+// resolveAgentName returns the exact hcom identity to address for an omni role
+// on a room's bus, or "" if no joined agent matches (not started yet). Reads the
+// instances table so a direct send hits the agent whether its role rode in on
+// the name (hcom start --as <role>) or the tag (HCOM_TAG=<role>).
+func resolveAgentName(hcomDir, role string) string {
+	path := filepath.Join(hcomDir, "hcom.db")
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(2000)&mode=ro")
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT name, COALESCE(tag,'') FROM instances`)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, tag string
+		if rows.Scan(&name, &tag) != nil {
+			continue
+		}
+		if name == role || tag == role || (tag == "" && strings.HasPrefix(name, role+"-")) {
+			return name
+		}
+	}
+	return ""
 }
 
 func jsonNames(s string) []string {
