@@ -83,6 +83,39 @@ pub struct Status {
     pub activity: String,
 }
 
+/// A session to restore on the next omni start: enough to re-launch the agent
+/// in the same project/room/role (Claude resumes its own conversation via -c).
+pub struct SavedSession {
+    pub room: String,
+    pub project: String,
+    pub role: String,
+}
+
+/// load_sessions returns the open tiles to restore, oldest first. Ended ('done')
+/// rows are skipped so a session the user closed isn't reopened.
+pub fn load_sessions(conn: &Connection) -> Result<Vec<SavedSession>> {
+    let mut stmt = conn
+        .prepare("SELECT room, project_path, role FROM sessions WHERE status != 'done' ORDER BY started_at, rowid")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(SavedSession { room: r.get(0)?, project: r.get(1)?, role: r.get(2)? })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn clear_sessions(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM sessions", [])?;
+    Ok(())
+}
+
+pub fn delete_session(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM sessions WHERE id=?1", rusqlite::params![id])?;
+    Ok(())
+}
+
 /// statuses returns id → (status, activity) for every known session.
 pub fn statuses(conn: &Connection) -> Result<HashMap<String, Status>> {
     let mut stmt = conn.prepare("SELECT id, status, current_activity FROM sessions")?;
@@ -174,6 +207,23 @@ mod tests {
             assert_eq!(s, want_s, "event {ev} status");
             assert_eq!(a, want_a, "event {ev} activity");
         }
+    }
+
+    // The restore set must track the open tiles: load skips ended ('done')
+    // sessions, delete forgets one tile, clear empties the table.
+    #[test]
+    fn restore_set_tracks_open_tiles() {
+        let conn = open(std::path::Path::new(":memory:")).unwrap();
+        insert_session(&conn, "a", "r1", "/p1", "lead").unwrap();
+        insert_session(&conn, "b", "r2", "/p2", "dev").unwrap();
+        apply_event(&conn, "b", "end", "").unwrap(); // b ended → status 'done'
+        let open: Vec<String> = load_sessions(&conn).unwrap().into_iter().map(|s| s.room).collect();
+        assert_eq!(open, vec!["r1"], "ended session is not restored");
+        delete_session(&conn, "a").unwrap();
+        assert!(load_sessions(&conn).unwrap().is_empty(), "deleted tile forgotten");
+        insert_session(&conn, "c", "r3", "/p3", "lead").unwrap();
+        clear_sessions(&conn).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     }
 }
 

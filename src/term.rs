@@ -29,7 +29,7 @@ impl Term {
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave); // close our handle to the slave so EOF propagates on exit
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
         {
@@ -66,10 +66,23 @@ impl Term {
         self.cols = cols;
     }
 
-    /// write_input forwards raw bytes (encoded keystrokes) to the child.
+    /// write_input forwards raw bytes (encoded keystrokes) to the child. Typing
+    /// snaps the view back to live (out of any scrollback).
     pub fn write_input(&mut self, bytes: &[u8]) {
+        if let Ok(mut p) = self.parser.lock() {
+            p.set_scrollback(0);
+        }
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
+    }
+
+    /// scroll moves the vt100 scrollback view by delta rows (positive = back into
+    /// history, negative = toward live); clamped at the live edge.
+    pub fn scroll(&self, delta: isize) {
+        if let Ok(mut p) = self.parser.lock() {
+            let cur = p.screen().scrollback() as isize;
+            p.set_scrollback((cur + delta).max(0) as usize);
+        }
     }
 
     pub fn parser(&self) -> Arc<Mutex<vt100::Parser>> {

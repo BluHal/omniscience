@@ -13,6 +13,7 @@ pub struct LaunchSpec {
     pub settings: PathBuf,
     pub hcom_dir: PathBuf,
     pub brief: Option<String>,
+    pub resume: bool, // restored from a previous omni run → resume the conversation
 }
 
 /// launch_prompt prepends the hcom self-join (plain claude + hcom hooks doesn't
@@ -20,6 +21,11 @@ pub struct LaunchSpec {
 /// delegate via `omni spawn` so parallel work shows up as separate live tiles
 /// (ADR-0002: spawning routes through omni, not the native Task tool).
 fn launch_prompt(spec: &LaunchSpec) -> String {
+    if spec.resume {
+        return "First run: hcom start   (re-join your team message bus). You were \
+                restored in omni — pick up where you left off and await the user."
+            .to_string();
+    }
     let body = match spec.brief.as_deref() {
         Some(b) if !b.trim().is_empty() => b.trim().to_string(),
         _ => format!(
@@ -45,6 +51,12 @@ pub fn claude_command(spec: &LaunchSpec) -> CommandBuilder {
     cmd.env("HCOM_TAG", &spec.role);
     cmd.arg("--settings");
     cmd.arg(spec.settings.to_string_lossy().to_string());
+    if spec.resume {
+        // ponytail: --continue resumes the LATEST conversation in this dir; if two
+        // agents shared a dir they'd both resume the same one. Track per-session
+        // claude session-ids and use --resume <id> if that collision ever bites.
+        cmd.arg("--continue");
+    }
     cmd.arg(launch_prompt(spec));
     cmd
 }

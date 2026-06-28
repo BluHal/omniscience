@@ -19,6 +19,7 @@ fn bold(c: ratatui::style::Color) -> Style {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    app.tile_areas.clear();
     f.render_widget(Block::default().style(Style::default().bg(SCREEN)), area);
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).split(area);
     top_bar(f, app, rows[0]);
@@ -318,6 +319,7 @@ fn tile(f: &mut Frame, app: &mut App, i: usize, area: Rect, compact: bool) {
     if area.height < 2 || area.width < 2 {
         return;
     }
+    app.tile_areas.push((i, area)); // for mouse click-to-focus
     let focused = i == app.focus;
     let status = app.tiles[i].status.clone();
     let header = tile_header(&app.tiles[i], focused, app.blink);

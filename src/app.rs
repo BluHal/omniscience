@@ -7,7 +7,8 @@ use crate::launch::{self, LaunchSpec};
 use crate::term::Term;
 use crate::{db, hooks};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -70,6 +71,7 @@ pub struct App {
     settings: PathBuf,
     bus_dirs: std::collections::HashMap<String, PathBuf>, // group → its shared hcom bus dir
     last_poll: Instant,
+    pub tile_areas: Vec<(usize, Rect)>, // populated each frame for mouse hit-testing
 }
 
 impl App {
@@ -91,6 +93,7 @@ impl App {
             settings,
             bus_dirs: std::collections::HashMap::new(),
             last_poll: Instant::now() - Duration::from_secs(1),
+            tile_areas: Vec::new(),
         })
     }
 
@@ -159,7 +162,7 @@ impl App {
         }
         if let Ok(reqs) = db::take_spawn_requests(&self.db) {
             for r in reqs {
-                let _ = self.spawn_into(&r.room, &r.role, PathBuf::from(&r.project_path), Some(r.brief), cols, rows);
+                let _ = self.spawn_into(&r.room, &r.role, PathBuf::from(&r.project_path), Some(r.brief), cols, rows, false);
             }
         }
     }
@@ -170,10 +173,45 @@ impl App {
     pub fn open_project(&mut self, dir: PathBuf, cols: u16, rows: u16) -> Result<()> {
         let group = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
         crate::recents::push(&dir);
-        self.spawn_into(&group, "lead", dir, None, cols, rows)
+        self.spawn_into(&group, "lead", dir, None, cols, rows, false)
     }
 
-    fn spawn_into(&mut self, group: &str, role: &str, dir: PathBuf, brief: Option<String>, cols: u16, rows: u16) -> Result<()> {
+    /// restore_sessions re-launches the tiles that were open when omni last closed
+    /// (db.sessions is kept in sync with the live tiles). Each agent resumes its
+    /// own conversation via claude --continue. Called once at startup.
+    pub fn restore_sessions(&mut self, cols: u16, rows: u16) {
+        let saved = db::load_sessions(&self.db).unwrap_or_default();
+        if saved.is_empty() {
+            return;
+        }
+        let _ = db::clear_sessions(&self.db); // re-spawning writes fresh rows
+        for s in saved {
+            let _ = self.spawn_into(&s.room, &s.role, PathBuf::from(&s.project), None, cols, rows, true);
+        }
+        self.focus = 0;
+    }
+
+    /// reap_exited drops tiles whose Claude has quit and forgets their saved state,
+    /// so the db keeps reflecting exactly the open tiles (the restore set).
+    fn reap_exited(&mut self) {
+        let mut dead = Vec::new();
+        self.tiles.retain_mut(|t| {
+            if t.term.exited() {
+                dead.push(t.id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for id in dead {
+            let _ = db::delete_session(&self.db, &id);
+        }
+        if self.focus >= self.tiles.len() && !self.tiles.is_empty() {
+            self.focus = self.tiles.len() - 1;
+        }
+    }
+
+    fn spawn_into(&mut self, group: &str, role: &str, dir: PathBuf, brief: Option<String>, cols: u16, rows: u16, resume: bool) -> Result<()> {
         let id = db::random_id();
         db::insert_session(&self.db, &id, group, &dir.to_string_lossy(), role)?;
         // The whole group shares ONE hcom bus: pin it to the first tile's dir so
@@ -191,6 +229,7 @@ impl App {
             settings: self.settings.clone(),
             hcom_dir,
             brief,
+            resume,
         };
         let _ = std::fs::create_dir_all(&spec.hcom_dir);
         let term = Term::spawn(launch::claude_command(&spec), rows.max(4), cols.max(20))?;
@@ -245,7 +284,9 @@ impl App {
         match self.mode {
             Mode::Nav => self.nav_key(k, cols, rows),
             Mode::Insert => {
-                if k.code == KeyCode::Char('\\') && k.modifiers.contains(KeyModifiers::CONTROL) {
+                let back = (k.code == KeyCode::Char('\\') && k.modifiers.contains(KeyModifiers::CONTROL))
+                    || k.code == KeyCode::Char('\x1c'); // 0x1c = raw Ctrl+\ byte
+                if back {
                     self.mode = Mode::Nav;
                 } else if let Some(t) = self.tiles.get_mut(self.focus) {
                     t.term.write_input(&encode_key(k));
@@ -310,6 +351,21 @@ impl App {
                     s.push(c);
                 }
             }
+            _ => {}
+        }
+    }
+
+    pub fn on_mouse(&mut self, ev: MouseEvent) {
+        let hit = self
+            .tile_areas
+            .iter()
+            .find(|(_, r)| ev.column >= r.x && ev.column < r.x + r.width && ev.row >= r.y && ev.row < r.y + r.height)
+            .map(|&(i, _)| i);
+        let Some(i) = hit else { return };
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => self.focus = i,
+            MouseEventKind::ScrollUp => self.tiles[i].term.scroll(3),
+            MouseEventKind::ScrollDown => self.tiles[i].term.scroll(-3),
             _ => {}
         }
     }
@@ -430,6 +486,7 @@ mod tests {
             settings: PathBuf::new(),
             bus_dirs: std::collections::HashMap::new(),
             last_poll: Instant::now(),
+            tile_areas: Vec::new(),
         }
     }
 
@@ -509,7 +566,12 @@ pub fn encode_key(k: KeyEvent) -> Vec<u8> {
 }
 
 pub fn run_loop(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
     let mut app = App::new()?;
+    {
+        let size = terminal.size()?;
+        app.restore_sessions(size.width.saturating_sub(6), size.height.saturating_sub(6));
+    }
     loop {
         terminal.draw(|f| crate::ui::draw(f, &mut app))?;
         if app.should_quit {
@@ -518,15 +580,15 @@ pub fn run_loop(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         let size = terminal.size()?;
         let (tw, th) = (size.width.saturating_sub(6), size.height.saturating_sub(6));
         if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(k) = event::read()? {
-                app.on_key(k, tw, th)?;
+            match event::read()? {
+                Event::Key(k) => app.on_key(k, tw, th)?,
+                Event::Mouse(m) => app.on_mouse(m),
+                _ => {}
             }
         }
         app.poll(tw, th);
-        app.tiles.retain_mut(|t| !t.term.exited());
-        if app.focus >= app.tiles.len() && !app.tiles.is_empty() {
-            app.focus = app.tiles.len() - 1;
-        }
+        app.reap_exited();
     }
+    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
     Ok(())
 }
