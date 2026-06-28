@@ -37,8 +37,22 @@ pub struct Proj {
 
 pub struct Picker {
     pub query: String,
-    pub results: Vec<Proj>,
+    pub all: Vec<Proj>,   // every git repo found under $HOME (scanned once)
+    pub results: Vec<usize>, // indices into `all` matching the query
     pub cursor: usize,
+}
+
+impl Picker {
+    fn refilter(&mut self) {
+        let q = self.query.to_lowercase();
+        self.results = (0..self.all.len())
+            .filter(|&i| subseq(&q, &self.all[i].path.to_lowercase()))
+            .collect();
+        self.cursor = 0;
+    }
+    pub fn selected(&self) -> Option<&Proj> {
+        self.results.get(self.cursor).map(|&i| &self.all[i])
+    }
 }
 
 pub struct App {
@@ -258,7 +272,9 @@ impl App {
     }
 
     fn open_picker(&mut self) {
-        self.picker = Some(Picker { query: String::new(), results: scan_projects(""), cursor: 0 });
+        let all = find_projects();
+        let results = (0..all.len()).collect();
+        self.picker = Some(Picker { query: String::new(), all, results, cursor: 0 });
     }
 
     fn picker_key(&mut self, k: KeyEvent, cols: u16, rows: u16) -> Result<()> {
@@ -277,19 +293,15 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    if let Some(proj) = p.results.get(p.cursor) {
-                        launch_dir = Some(proj.abs.clone());
-                    }
+                    launch_dir = p.selected().map(|pr| pr.abs.clone());
                 }
                 KeyCode::Backspace => {
                     p.query.pop();
-                    p.results = scan_projects(&p.query);
-                    p.cursor = 0;
+                    p.refilter();
                 }
                 KeyCode::Char(c) => {
                     p.query.push(c);
-                    p.results = scan_projects(&p.query);
-                    p.cursor = 0;
+                    p.refilter();
                 }
                 _ => {}
             }
@@ -302,35 +314,74 @@ impl App {
     }
 }
 
-pub fn scan_projects(query: &str) -> Vec<Proj> {
+/// find_projects walks $HOME (bounded depth, noise pruned) collecting every git
+/// repo (a dir containing .git). Scanned once when the picker opens; filtering
+/// is then in-memory. ponytail: a bounded BFS, not Spotlight — no deps, and a
+/// repo isn't descended into, so it stays fast on a normal home.
+pub fn find_projects() -> Vec<Proj> {
     let home = dirs::home_dir().unwrap_or_default();
-    let home_s = home.to_string_lossy().into_owned();
+    find_under(home.clone(), &home.to_string_lossy())
+}
+
+fn find_under(root: PathBuf, home_s: &str) -> Vec<Proj> {
+    let prune: std::collections::HashSet<&str> = [
+        "node_modules", ".git", "Library", ".Trash", "target", "vendor", "dist", "build",
+        ".cargo", ".rustup", ".cache", "Applications", "Pictures", "Music", "Movies",
+        ".npm", ".local", ".gem", ".cursor", ".vscode", ".venv", "venv", "__pycache__",
+    ]
+    .into_iter()
+    .collect();
     let mut out = Vec::new();
-    for root in launch::project_roots() {
-        let entries = match std::fs::read_dir(&root) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for e in entries.flatten() {
-            if !e.path().is_dir() {
-                continue;
+    let mut stack = vec![(root, 0usize)];
+    let mut visited = 0usize;
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 7 || visited > 30000 {
+            continue;
+        }
+        visited += 1;
+        if dir.join(".git").exists() {
+            let disp = dir.to_string_lossy().replacen(home_s, "~", 1);
+            let branch = launch::git_branch(&dir);
+            out.push(Proj { path: disp, abs: dir, branch });
+            continue; // don't descend into a repo
+        }
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let nm = e.file_name();
+                let nm = nm.to_string_lossy();
+                if nm.starts_with('.') || prune.contains(nm.as_ref()) {
+                    continue;
+                }
+                if e.path().is_dir() {
+                    stack.push((e.path(), depth + 1));
+                }
             }
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
-            }
-            let abs = e.path();
-            let disp = abs.to_string_lossy().replacen(&home_s, "~", 1);
-            if !subseq(&query.to_lowercase(), &disp.to_lowercase()) {
-                continue;
-            }
-            let branch = launch::git_branch(&abs);
-            out.push(Proj { path: disp, abs, branch });
         }
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
-    out.truncate(12);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_git_repos_recursively() {
+        let tmp = std::env::temp_dir().join(format!("omni-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("a/.git")).unwrap();
+        std::fs::create_dir_all(tmp.join("nested/deep/b/.git")).unwrap();
+        std::fs::create_dir_all(tmp.join("node_modules/pkg/.git")).unwrap(); // pruned
+        std::fs::create_dir_all(tmp.join("plain")).unwrap(); // not a repo
+        let found = find_under(tmp.clone(), &tmp.to_string_lossy());
+        let names: Vec<String> = found.iter().map(|p| p.path.clone()).collect();
+        assert!(names.iter().any(|n| n.ends_with("/a")), "should find a: {names:?}");
+        assert!(names.iter().any(|n| n.ends_with("/b")), "should find nested b: {names:?}");
+        assert!(!names.iter().any(|n| n.contains("node_modules")), "node_modules pruned: {names:?}");
+        assert!(!names.iter().any(|n| n.ends_with("/plain")), "plain isn't a repo: {names:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
 
 fn subseq(q: &str, s: &str) -> bool {

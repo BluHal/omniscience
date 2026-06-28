@@ -272,8 +272,8 @@ fn summary(t: &Tile) -> String {
 
 fn picker(f: &mut Frame, app: &App, area: Rect) {
     let p = app.picker.as_ref().unwrap();
-    let w = 72.min(area.width.saturating_sub(8));
-    let h = (p.results.len().min(8) as u16 + 5).min(area.height.saturating_sub(2));
+    let w = 76.min(area.width.saturating_sub(8));
+    let h = (p.results.len().min(14) as u16 + 5).min(area.height.saturating_sub(2));
     let modal = Rect { x: area.x + (area.width.saturating_sub(w)) / 2, y: area.y + 3, width: w, height: h };
     f.render_widget(Clear, modal);
     let block = Block::bordered()
@@ -281,7 +281,7 @@ fn picker(f: &mut Frame, app: &App, area: Rect) {
         .border_style(sty(FOCUS))
         .style(Style::default().bg(PANEL))
         .title_top(Line::from(vec![Span::styled(format!("{} open project", SEARCH), bold(TXT)), Span::styled("  プロジェクトを開く", sty(FAINT))]).left_aligned())
-        .title_top(Line::from(Span::styled("scan ~/work ~/src ~/dev", sty(FAINT))).right_aligned());
+        .title_top(Line::from(Span::styled("scan ~ · git repos", sty(FAINT))).right_aligned());
     let inner = block.inner(modal);
     f.render_widget(block, modal);
 
@@ -291,11 +291,19 @@ fn picker(f: &mut Frame, app: &App, area: Rect) {
     ]);
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).split(inner);
     f.render_widget(Paragraph::new(qline), chunks[0]);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(format!("{} matches ", p.results.len()), sty(FAINT)))).alignment(Alignment::Right),
+        chunks[0],
+    );
     f.render_widget(Paragraph::new(Line::from(Span::styled(" ─".repeat((inner.width / 2) as usize), sty(BD2)))), chunks[1]);
 
+    // window the visible results around the cursor
+    let max_rows = chunks[2].height.max(1) as usize;
+    let start = p.cursor.saturating_sub(max_rows.saturating_sub(1));
     let mut rows = Vec::new();
-    for (i, pr) in p.results.iter().take(8).enumerate() {
-        let sel = i == p.cursor;
+    for (vis, &idx) in p.results.iter().enumerate().skip(start).take(max_rows) {
+        let pr = &p.all[idx];
+        let sel = vis == p.cursor;
         let marker = if sel { Span::styled(format!(" {} ", ROW), bold(FOCUS)) } else { Span::styled(format!(" {} ", ROW), sty(FAINT)) };
         let name = if sel { Span::styled(pr.path.clone(), bold(TXT)) } else { Span::styled(pr.path.clone(), sty(TXT)) };
         let branch = Span::styled(format!("  {} {}", if sel { WORKING } else { IDLE_G }, pr.branch), sty(if sel { WORK } else { FAINT }));
@@ -306,7 +314,7 @@ fn picker(f: &mut Frame, app: &App, area: Rect) {
         rows.push(line);
     }
     if rows.is_empty() {
-        rows.push(Line::from(Span::styled(" no matches under ~/work ~/src ~/dev", sty(FAINT))));
+        rows.push(Line::from(Span::styled(" no git repos matched under ~", sty(FAINT))));
     }
     f.render_widget(Paragraph::new(rows), chunks[2]);
 }
