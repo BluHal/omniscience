@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -42,55 +43,22 @@ func up(room string) error {
 		return fmt.Errorf("no .md briefs in %s", roomDir)
 	}
 
-	projectPath, _ := filepath.Abs(".")
-	dbp := dbPath()
-	db, err := openDB(dbp)
+	db, dbp, settingsPath, projectPath, err := prep()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-
-	self, err := os.Executable()
+	hcomDir, err := ensureHcomDir(room)
 	if err != nil {
-		return err
-	}
-
-	// Per-room isolated hcom bus: a co-located .hcom whose HCOM_DIR each agent
-	// inherits via the tmux window env. Two rooms => two HCOM_DIRs => zero
-	// cross-talk. Standalone (no-room) launches never get here, so structurally
-	// they get status hooks but no bus (SPEC: "monitored-but-mute").
-	hcomDir, err := filepath.Abs(filepath.Join(roomDir, ".hcom"))
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(hcomDir, 0o755); err != nil {
-		return err
-	}
-
-	settingsPath, err := writeHookSettings(self, filepath.Dir(dbp))
-	if err != nil {
-		return err
-	}
-	if err := ensureSession(projectPath); err != nil {
 		return err
 	}
 
 	for _, brief := range briefs {
 		role := strings.TrimSuffix(brief, ".md")
-		id := newID()
-		now := time.Now().Unix()
-		if _, err := db.Exec(`INSERT INTO sessions
-			(id,room,project_path,role,tmux_pane,model,status,current_activity,started_at,last_event_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			id, room, projectPath, role, "", "default", "starting", "", now, now); err != nil {
-			return err
-		}
 		briefPath := filepath.Join(roomDir, brief)
-		pane, err := launchWindow(role, projectPath, dbp, id, settingsPath, briefPath, hcomDir)
+		prompt := launchPrompt(fmt.Sprintf("read your brief at %s and begin working on it.", briefPath))
+		id, pane, err := spawnAgent(db, room, role, projectPath, dbp, settingsPath, hcomDir, prompt)
 		if err != nil {
-			return err
-		}
-		if _, err := db.Exec(`UPDATE sessions SET tmux_pane=? WHERE id=?`, pane, id); err != nil {
 			return err
 		}
 		fmt.Printf("up: %-12s room=%s id=%s pane=%s\n", role, room, id, pane)
@@ -98,6 +66,110 @@ func up(room string) error {
 	fmt.Printf("\n%d agent(s) up in tmux session %q.  View: omni   Attach: tmux attach -t %s\n",
 		len(briefs), tmuxSession, tmuxSession)
 	return nil
+}
+
+// spawn adds ONE agent to an existing live room at runtime (SPEC decision 13):
+// the same launch path as up (omni's status hooks + the room's hcom bus + a
+// state.db row), so the agent shows up live in the dashboard with no restart.
+// brief is optional — an existing file path the agent reads, inline text, or
+// empty (the role name seeds the prompt).
+func spawn(room, role, brief string) error {
+	if room == "" || role == "" {
+		return fmt.Errorf("usage: omni spawn <room> <role> [brief]")
+	}
+	db, dbp, settingsPath, projectPath, err := prep()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	hcomDir, err := ensureHcomDir(room)
+	if err != nil {
+		return err
+	}
+	prompt := launchPrompt(spawnBody(role, brief))
+	id, pane, err := spawnAgent(db, room, role, projectPath, dbp, settingsPath, hcomDir, prompt)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("spawn: %-12s room=%s id=%s pane=%s\n", role, room, id, pane)
+	fmt.Printf("View: omni   Attach: tmux attach -t %s\n", tmuxSession)
+	return nil
+}
+
+// spawnBody turns spawn's optional brief into the agent's first instruction: an
+// existing file → read it; non-empty text → use it inline; empty → seed from the
+// role. Pure enough to unit-test (the only I/O is the file-exists probe).
+func spawnBody(role, brief string) string {
+	brief = strings.TrimSpace(brief)
+	if brief == "" {
+		return fmt.Sprintf("your role is %q. Begin working on it.", role)
+	}
+	if info, err := os.Stat(brief); err == nil && !info.IsDir() {
+		if abs, err := filepath.Abs(brief); err == nil {
+			brief = abs
+		}
+		return fmt.Sprintf("read your brief at %s and begin working on it.", brief)
+	}
+	return brief // inline brief text
+}
+
+// prep opens state.db and writes the merged hook --settings shared by every
+// launch path, and ensures the detached "omni" tmux session exists. On any
+// error after the db is open it closes the db so callers needn't.
+func prep() (db *sql.DB, dbp, settingsPath, projectPath string, err error) {
+	projectPath, _ = filepath.Abs(".")
+	dbp = dbPath()
+	if db, err = openDB(dbp); err != nil {
+		return
+	}
+	self, err := os.Executable()
+	if err == nil {
+		settingsPath, err = writeHookSettings(self, filepath.Dir(dbp))
+	}
+	if err == nil {
+		err = ensureSession(projectPath)
+	}
+	if err != nil {
+		db.Close()
+	}
+	return
+}
+
+// ensureHcomDir creates and returns the absolute path to a room's co-located
+// isolated hcom bus dir. Two rooms => two HCOM_DIRs => zero cross-talk; standalone
+// (no-room) launches never call this, so they get status hooks but no bus.
+func ensureHcomDir(room string) (string, error) {
+	hcomDir, err := filepath.Abs(filepath.Join(".omni", room, ".hcom"))
+	if err != nil {
+		return "", err
+	}
+	return hcomDir, os.MkdirAll(hcomDir, 0o755)
+}
+
+// spawnAgent is the single launch path shared by up and spawn: insert the
+// state.db row, launch the agent's tmux window wired to omni's hooks + the
+// room's hcom bus, then record its pane id. Returns the new row id and pane.
+func spawnAgent(db *sql.DB, room, role, projectPath, dbp, settingsPath, hcomDir, prompt string) (id, pane string, err error) {
+	id = newID()
+	now := time.Now().Unix()
+	if _, err = db.Exec(`INSERT INTO sessions
+		(id,room,project_path,role,tmux_pane,model,status,current_activity,started_at,last_event_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		id, room, projectPath, role, "", "default", "starting", "", now, now); err != nil {
+		return
+	}
+	if pane, err = launchWindow(role, projectPath, dbp, id, settingsPath, hcomDir, prompt); err != nil {
+		return
+	}
+	_, err = db.Exec(`UPDATE sessions SET tmux_pane=? WHERE id=?`, pane, id)
+	return
+}
+
+// launchPrompt prepends the hcom self-join to an agent's first instruction.
+// Plain claude + hcom hooks does NOT auto-join, so every launched agent must run
+// `hcom start` once (pre-approved by the merged settings) for a name + inbox.
+func launchPrompt(body string) string {
+	return "First run: hcom start   (joins your team message bus). Then " + body
 }
 
 // writeHookSettings emits a single --settings file carrying BOTH omni's status
@@ -208,20 +280,15 @@ func ensureSession(startDir string) error {
 }
 
 // launchWindow opens a new tmux window running a plain (user-authed) claude
-// wired to omni's hooks + the room's hcom bus, and returns its pane id.
+// wired to omni's hooks + the room's hcom bus, and returns its pane id. The
+// caller builds the prompt (via launchPrompt) — up and spawn differ only there.
 //
 // Addressing scheme (load-bearing for issues #3/#6): HCOM_TAG=<role> tags this
-// agent on the bus. role is the brief filename without .md, unique within a room,
-// so omni can later address exactly this agent as @<role> (per hcom: tagged
-// agents are reachable as @<tag> and @<tag>-<name>). HCOM_DIR points at the
-// room's isolated .hcom; its instances table records name/tag/directory.
-//
-// The prompt makes the agent self-join: plain claude + hcom hooks does NOT
-// auto-join, so it must run `hcom start` once (pre-approved by hcom's
-// permissions.allow Bash(hcom start:*)) to get an identity + inbox.
-func launchWindow(role, dir, dbp, id, settings, briefPath, hcomDir string) (string, error) {
-	prompt := fmt.Sprintf("First run: hcom start   (joins your team message bus). "+
-		"Then read your brief at %s and begin working on it.", briefPath)
+// agent on the bus. role is unique within a room, so omni can later address
+// exactly this agent as @<role> (per hcom: tagged agents are reachable as
+// @<tag> and @<tag>-<name>). HCOM_DIR points at the room's isolated .hcom; its
+// instances table records name/tag/directory.
+func launchWindow(role, dir, dbp, id, settings, hcomDir, prompt string) (string, error) {
 	claudeCmd := fmt.Sprintf("claude --settings %s %s", shellQuote(settings), shellQuote(prompt))
 	out, err := exec.Command("tmux", "new-window", "-d", "-P", "-F", "#{pane_id}",
 		"-t", tmuxSession, "-n", role, "-c", dir,

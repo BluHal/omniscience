@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -40,5 +42,24 @@ func TestBuildSettings(t *testing.T) {
 	ss := hooks["SessionStart"].([]any)
 	if len(ss) < 2 {
 		t.Errorf("SessionStart should carry both omni+hcom entries, got %d", len(ss))
+	}
+}
+
+// TestSpawnBody is the runnable check behind spawn's optional brief: empty seeds
+// from the role, an existing file becomes a "read your brief" instruction, and
+// anything else is treated as the inline brief verbatim.
+func TestSpawnBody(t *testing.T) {
+	if got := spawnBody("frontend", ""); !strings.Contains(got, "frontend") {
+		t.Errorf("empty brief should seed from role, got %q", got)
+	}
+	if got := spawnBody("x", "just do the thing"); got != "just do the thing" {
+		t.Errorf("inline brief should pass through, got %q", got)
+	}
+	f := filepath.Join(t.TempDir(), "brief.md")
+	if err := os.WriteFile(f, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := spawnBody("x", f); !strings.Contains(got, "read your brief at") || !strings.Contains(got, f) {
+		t.Errorf("file brief should reference the path, got %q", got)
 	}
 }

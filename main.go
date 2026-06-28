@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -27,6 +28,17 @@ func main() {
 			fmt.Fprintln(os.Stderr, "omni up:", err)
 			os.Exit(1)
 		}
+	case "spawn":
+		// omni spawn <room> <role> [brief...] — add one agent to a live room.
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: omni spawn <room> <role> [brief]")
+			os.Exit(2)
+		}
+		brief := strings.Join(os.Args[4:], " ")
+		if err := spawn(os.Args[2], os.Args[3], brief); err != nil {
+			fmt.Fprintln(os.Stderr, "omni spawn:", err)
+			os.Exit(1)
+		}
 	case "hook":
 		// Invoked by Claude Code on every hook event. Must never break the
 		// agent, so it always exits 0 (see hook()).
@@ -35,7 +47,7 @@ func main() {
 		}
 		hook(os.Args[2])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: omni [up <room> | hook <event>]")
+		fmt.Fprintln(os.Stderr, "usage: omni [up <room> | spawn <room> <role> [brief] | hook <event>]")
 		os.Exit(2)
 	}
 }
