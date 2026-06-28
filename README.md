@@ -41,15 +41,17 @@ dashboard is the thing being built. Full landscape and rationale: **[SPEC.md](SP
 
 ## Status
 
-First vertical slice (tracer bullet): `omni up <room>` spawns agents wired to
-status hooks that write `~/.omni/state.db`; `omni` (no args) is the live
-dashboard. **Not built yet:** the chat/hcom layer, answer-broadcast, and
-Enter-to-attach. See [SPEC.md](SPEC.md) § Deferred.
+`omni up <room>` and `omni spawn <room> <role> [brief]` spawn agents wired to
+status hooks (`~/.omni/state.db`) **and** each room's isolated hcom bus. `omni`
+(no args) is the live dashboard: a room-grouped overview, an in-room TILED chat
+read off the bus, Enter-to-attach into an agent's tmux, and send/broadcast back
+to agents. See [SPEC.md](SPEC.md) for the design and remaining § Deferred items.
 
 ## Prerequisites
 
-Go 1.26+, `tmux`, and an authenticated `claude` CLI. `hcom` is only needed once
-the (not-yet-built) chat layer lands.
+Go 1.26+, `tmux`, an authenticated `claude` CLI, and
+[`hcom`](https://github.com/aannoo/hcom) (`brew install aannoo/hcom/hcom`) for
+the per-room message bus.
 
 ## Build
 
@@ -69,10 +71,16 @@ brief = the file's contents:
 ```
 
 ```
-omni up feature-x    # spawn one claude agent per brief in the detached "omni" tmux session
-omni                 # live dashboard
-tmux attach -t omni  # drop into the agents
+omni up feature-x                 # spawn one claude agent per brief on an isolated hcom bus
+omni spawn feature-x reviewer      # add one more agent to the live room (optional brief: path or inline)
+omni                              # live dashboard
+tmux attach -t omni              # drop into the agents directly
 ```
+
+In the dashboard: `↑↓` move, `enter` opens a room. Inside a room the agents
+render TILED (each one's chat side-by-side): `←→` focus an agent, type + `enter`
+sends direct to it, `ctrl+b` broadcasts to the whole room as a tagged decision,
+`enter` on an empty line attaches to that agent's tmux, `esc` backs out.
 
 ## How it works
 
@@ -96,4 +104,6 @@ config is never touched. Each hook event updates one row of `state.db`:
 | `SessionEnd` | `done` |
 
 The TUI is a 500ms poll over that one table — its entire cross-project view is a
-single query. Architecture diagram and the per-room chat layer: **[SPEC.md](SPEC.md)**.
+single query. Opening a room adds a second poll over that room's hcom db
+(`.omni/<room>/.hcom`) for the TILED chat; sending shells out to `hcom send`.
+Architecture diagram and the per-room chat layer: **[SPEC.md](SPEC.md)**.
