@@ -26,7 +26,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     let picker_open = app.picker.is_some();
     if app.tiles.is_empty() && !picker_open {
-        empty(f, body);
+        empty(f, app, body);
     } else if app.glance && !picker_open {
         glance(f, app, body);
     } else {
@@ -40,16 +40,83 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if picker_open {
         picker(f, app, body);
     }
+    if app.help {
+        help(f, body);
+    }
+}
+
+fn keyline(k: &str, l: &str) -> Line<'static> {
+    Line::from(vec![Span::styled(format!("  {:<14}", k), bold(TXT)), Span::styled(l.to_string(), sty(DIM))])
+}
+
+fn help(f: &mut Frame, area: Rect) {
+    let lines = vec![
+        Line::from(Span::styled("run & watch live Claude Code sessions side by side", sty(DIM))),
+        Line::raw(""),
+        keyline("^n", "new project — fuzzy picker over git repos"),
+        keyline("i / ⏎", "type into the focused tile (insert)"),
+        keyline("^\\", "back to nav mode"),
+        keyline("↹ / arrows", "move focus between tiles"),
+        keyline("^b", "broadcast a decision to the group"),
+        keyline("z", "glance mode (compact keep-an-eye cards)"),
+        keyline("!", "jump to a blocked agent"),
+        keyline("q", "quit"),
+        Line::raw(""),
+        Line::from(Span::styled("  a Lead delegates with:", sty(FAINT))),
+        Line::from(Span::styled("  omni spawn <room> <role> [--dir <path>] [brief]", sty(IDLE))),
+        Line::raw(""),
+        Line::from(Span::styled("press any key to close", sty(FAINT))).alignment(Alignment::Center),
+    ];
+    let w = 60.min(area.width.saturating_sub(4));
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let modal = centered(area, w, h);
+    f.render_widget(Clear, modal);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(sty(FOCUS))
+        .style(Style::default().bg(PANEL))
+        .title_top(Line::from(vec![Span::styled(format!("{} omni · help", BRAND), bold(FOCUS))]).left_aligned());
+    let inner = block.inner(modal);
+    f.render_widget(block, modal);
+    f.render_widget(Paragraph::new(lines), Rect { x: inner.x + 2, width: inner.width.saturating_sub(4), ..inner });
+}
+
+/// highlight colors the query's matched (subsequence) characters in a path.
+fn highlight(path: &str, query: &str, sel: bool) -> Vec<Span<'static>> {
+    let base = if sel { bold(TXT) } else { sty(TXT) };
+    if query.is_empty() {
+        return vec![Span::styled(path.to_string(), base)];
+    }
+    let q: Vec<char> = query.to_lowercase().chars().collect();
+    let mut qi = 0;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
+    for c in path.chars() {
+        if qi < q.len() && c.to_ascii_lowercase() == q[qi] {
+            if !buf.is_empty() {
+                out.push(Span::styled(std::mem::take(&mut buf), base));
+            }
+            out.push(Span::styled(c.to_string(), bold(FOCUS)));
+            qi += 1;
+        } else {
+            buf.push(c);
+        }
+    }
+    if !buf.is_empty() {
+        out.push(Span::styled(buf, base));
+    }
+    out
 }
 
 fn compose_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Block::default().style(Style::default().bg(BAR)), area);
     let group = app.focused().map(|t| t.group.clone()).unwrap_or_default();
     let text = app.compose.clone().unwrap_or_default();
+    let caret = if app.blink { " " } else { "▌" };
     let line = Line::from(vec![
         Span::styled(format!(" {} broadcast → {}: ", CAST_G, group), bold(CAST)),
         Span::styled(text, sty(TXT)),
-        Span::styled("▌", sty(CAST)),
+        Span::styled(caret, sty(CAST)),
         Span::styled("   ⏎ send · esc cancel", sty(FAINT)),
     ]);
     let pad = Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area };
@@ -59,7 +126,13 @@ fn compose_bar(f: &mut Frame, app: &App, area: Rect) {
 fn top_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Block::default().style(Style::default().bg(BAR)), area);
     let (g, a, blk) = app.counts();
-    let sub = if app.glance { "glance mode · 俯瞰" } else { "~/work" };
+    let sub = if app.glance {
+        "glance mode · 俯瞰".to_string()
+    } else if app.tiles.is_empty() {
+        format!("v{}", env!("CARGO_PKG_VERSION"))
+    } else {
+        "~/work".to_string()
+    };
     let left = Line::from(vec![
         Span::styled(format!("{} omni", BRAND), bold(FOCUS)),
         Span::raw(" "),
@@ -76,10 +149,13 @@ fn top_bar(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("  ·  ", sty(FAINT)),
     ];
     if blk > 0 {
-        right.push(Span::styled(format!("{} {} blocked", BLOCKED, blk), bold(BLOCK)));
+        let mark = if app.blink { " " } else { BLOCKED };
+        right.push(Span::styled(format!("{} {} blocked", mark, blk), bold(BLOCK)));
     } else {
         right.push(Span::styled("○ none blocked", sty(FAINT)));
     }
+    right.push(Span::styled("  ·  ", sty(FAINT)));
+    right.push(Span::styled(chrono::Local::now().format("%H:%M").to_string(), sty(DIM)));
     let pad = Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area };
     f.render_widget(Paragraph::new(left).style(Style::default().bg(BAR)), pad);
     f.render_widget(Paragraph::new(Line::from(right)).alignment(Alignment::Right).style(Style::default().bg(BAR)), pad);
@@ -102,25 +178,52 @@ fn footer(f: &mut Frame, app: &App, area: Rect) {
         for s in hint("↹", "focus", TXT) { spans.push(s); }
         for s in hint("i/⏎", "type", TXT) { spans.push(s); }
         for s in hint("z", "glance", TXT) { spans.push(s); }
-        for s in hint("^n", "new project", TXT) { spans.push(s); }
-        for s in hint("!", "jump blocked", BLOCK) { spans.push(s); }
+        for s in hint("^n", "new", TXT) { spans.push(s); }
+        for s in hint("^b", "broadcast", CAST) { spans.push(s); }
+        for s in hint("?", "help", TXT) { spans.push(s); }
         for s in hint("q", "quit", TXT) { spans.push(s); }
     }
+    // right side: jump-to-blocked target, when one exists
     let pad = Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area };
     f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(BAR)), pad);
+    if app.picker.is_none() && app.compose.is_none() {
+        if let Some(t) = app.firstblocked_label() {
+            let r = Line::from(vec![
+                Span::styled("! ", bold(BLOCK)),
+                Span::styled(format!("jump to blocked → {} ", t), sty(BLOCK)),
+            ]);
+            f.render_widget(Paragraph::new(r).alignment(Alignment::Right).style(Style::default().bg(BAR)), pad);
+        }
+    }
 }
 
-fn empty(f: &mut Frame, area: Rect) {
-    let lines = vec![
+fn empty(f: &mut Frame, _app: &App, area: Rect) {
+    let recents = crate::recents::list();
+    let mut lines = vec![
         Line::from(vec![Span::styled("omni", bold(TXT)), Span::raw("  "), Span::styled("オムニ", sty(DIM))]).alignment(Alignment::Center),
         Line::raw(""),
         Line::from(Span::styled("run & watch many live coding sessions, side by side", sty(DIM))).alignment(Alignment::Center),
         Line::raw(""),
-        Line::from(vec![Span::styled("⏵ ", sty(FOCUS)), Span::styled("^n", bold(TXT)), Span::styled("  open a project", sty(TXT))]),
-        Line::from(vec![Span::styled("⏎ ", sty(DIM)), Span::styled("i", bold(TXT)), Span::styled("   type into the focused tile", sty(DIM))]),
-        Line::raw(""),
-        Line::from(Span::styled("LEGEND  ● working  ◍ blocked  ○ idle  ✓ done  ⌖ focus", sty(FAINT))).alignment(Alignment::Center),
+        Line::from(vec![Span::styled("⏵ ", sty(FOCUS)), Span::styled("^n", bold(TXT)), Span::styled("   open a project", sty(TXT))]),
     ];
+    if let Some(last) = recents.first() {
+        lines.push(Line::from(vec![
+            Span::styled("⏵ ", sty(DIM)),
+            Span::styled("⏎ ", bold(TXT)),
+            Span::styled(format!("  resume last — {}", crate::recents::display(last)), sty(DIM)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![Span::styled("⏵ ", sty(DIM)), Span::styled("i ", bold(TXT)), Span::styled("  type into the focused tile", sty(DIM))]));
+    }
+    if !recents.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled("RECENTS · 履歴", sty(FAINT))));
+        for r in recents.iter().take(3) {
+            lines.push(Line::from(vec![Span::styled(format!("{} ", RECENT), sty(FAINT)), Span::styled(crate::recents::display(r), sty(IDLE))]));
+        }
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("LEGEND  ● working  ◍ blocked  ○ idle  ✓ done  ⌖ focus", sty(FAINT))).alignment(Alignment::Center));
     let w = 64.min(area.width.saturating_sub(4));
     let h = (lines.len() as u16 + 2).min(area.height);
     let card = centered(area, w, h);
@@ -184,7 +287,19 @@ fn group_frame(f: &mut Frame, app: &mut App, name: &str, idxs: &[usize], area: R
     // lay out tiles within the group: lone tile fills; else lead left + agents right
     let lead_pos = idxs.iter().position(|&i| app.tiles[i].is_lead).unwrap_or(0);
     if idxs.len() == 1 {
-        tile(f, app, idxs[0], inner, compact);
+        if compact {
+            let parts = Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).spacing(1).split(inner);
+            tile(f, app, idxs[0], parts[0], true);
+            let filler = Block::bordered().border_type(BorderType::Rounded).border_style(sty(BD2));
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled("group of one · 待機", sty(FAINT))).alignment(Alignment::Center))
+                    .block(filler)
+                    .alignment(Alignment::Center),
+                parts[1],
+            );
+        } else {
+            tile(f, app, idxs[0], inner, false);
+        }
         return;
     }
     let parts = Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).spacing(1).split(inner);
@@ -205,7 +320,7 @@ fn tile(f: &mut Frame, app: &mut App, i: usize, area: Rect, compact: bool) {
     }
     let focused = i == app.focus;
     let status = app.tiles[i].status.clone();
-    let header = tile_header(&app.tiles[i], focused);
+    let header = tile_header(&app.tiles[i], focused, app.blink);
     let bt = if focused { BorderType::Double } else { BorderType::Rounded };
     let bc = if focused { FOCUS } else if status == "blocked" { BLOCK } else { BD };
     let block = Block::default()
@@ -220,10 +335,20 @@ fn tile(f: &mut Frame, app: &mut App, i: usize, area: Rect, compact: bool) {
     if compact {
         f.render_widget(block, area);
         let t = &app.tiles[i];
-        let body = Paragraph::new(vec![
-            Line::from(Span::styled(format!(" {}", summary(t)), sty(DIM))),
-            Line::from(Span::styled(format!(" ⏵ {}", t.role), sty(FAINT))),
-        ]);
+        let body = if t.status == "blocked" {
+            let caret = if app.blink { " " } else { "▌" };
+            let q = if t.activity.is_empty() { "awaiting your decision" } else { &t.activity };
+            Paragraph::new(vec![
+                Line::from(Span::styled(format!(" needs decision: {}", q), bold(TXT))),
+                Line::from(Span::styled(format!(" ⏎ expand to answer {}", caret), sty(BLOCK))),
+            ])
+        } else {
+            let last = if t.activity.is_empty() { t.status.as_str() } else { &t.activity };
+            Paragraph::new(vec![
+                Line::from(Span::styled(format!(" {}", summary(t)), sty(DIM))),
+                Line::from(Span::styled(format!(" ⏵ last: {}", last), sty(FAINT))),
+            ])
+        };
         f.render_widget(body, inner);
         return;
     }
@@ -236,11 +361,12 @@ fn tile(f: &mut Frame, app: &mut App, i: usize, area: Rect, compact: bool) {
     f.render_widget(pt, area);
 }
 
-fn tile_header(t: &Tile, focused: bool) -> (Line<'static>, Line<'static>) {
+fn tile_header(t: &Tile, focused: bool, blink: bool) -> (Line<'static>, Line<'static>) {
     let sc = status_color(&t.status);
     let mut left = Vec::new();
     if t.status == "blocked" {
-        left.push(Span::styled(format!("{} ", BLOCKED), sty(BLOCK)));
+        let mark = if blink { " " } else { BLOCKED };
+        left.push(Span::styled(format!("{} ", mark), sty(BLOCK)));
         left.push(Span::styled(t.role.clone(), bold(BLOCK)));
     } else if focused {
         left.push(Span::styled(format!("{} {} ", FOCUS_G, BRAND), sty(FOCUS)));
@@ -251,6 +377,9 @@ fn tile_header(t: &Tile, focused: bool) -> (Line<'static>, Line<'static>) {
     }
     if t.is_lead {
         left.push(Span::styled(" ⟦LEAD⟧", sty(if focused { FOCUS } else { IDLE })));
+    }
+    if t.status != "blocked" && !t.activity.is_empty() {
+        left.push(Span::styled(format!(" · {}", t.activity), sty(DIM)));
     }
     let right = if t.status == "blocked" {
         Line::from(Span::styled(" BLOCKED 要対応 ", Style::default().bg(BLOCK).fg(SCREEN).add_modifier(Modifier::BOLD)))
@@ -304,10 +433,12 @@ fn picker(f: &mut Frame, app: &App, area: Rect) {
     for (vis, &idx) in p.results.iter().enumerate().skip(start).take(max_rows) {
         let pr = &p.all[idx];
         let sel = vis == p.cursor;
-        let marker = if sel { Span::styled(format!(" {} ", ROW), bold(FOCUS)) } else { Span::styled(format!(" {} ", ROW), sty(FAINT)) };
-        let name = if sel { Span::styled(pr.path.clone(), bold(TXT)) } else { Span::styled(pr.path.clone(), sty(TXT)) };
-        let branch = Span::styled(format!("  {} {}", if sel { WORKING } else { IDLE_G }, pr.branch), sty(if sel { WORK } else { FAINT }));
-        let mut line = Line::from(vec![marker, name, branch]);
+        let glyph = if p.recent.contains(&pr.path) { RECENT } else { ROW };
+        let marker = if sel { Span::styled(format!(" {} ", glyph), bold(FOCUS)) } else { Span::styled(format!(" {} ", glyph), sty(FAINT)) };
+        let mut spans = vec![marker];
+        spans.extend(highlight(&pr.path, &p.query, sel));
+        spans.push(Span::styled(format!("  {} {}", if sel { WORKING } else { IDLE_G }, pr.branch), sty(if sel { WORK } else { FAINT })));
+        let mut line = Line::from(spans);
         if sel {
             line = line.style(Style::default().bg(INSET));
         }

@@ -25,7 +25,8 @@ fn launch_prompt(spec: &LaunchSpec) -> String {
         _ => format!(
             "await the user's instructions, then work in this project. To run sub-tasks \
              in parallel as separate live agents, run:  omni spawn {} <role> [brief]  \
-             — each appears as its own tile on your team's bus.",
+             (add --dir <path> to place an agent in another repo) — each appears as its \
+             own tile on your team's shared bus.",
             spec.room
         ),
     };

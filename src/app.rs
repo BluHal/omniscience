@@ -40,6 +40,7 @@ pub struct Picker {
     pub all: Vec<Proj>,   // every git repo found under $HOME (scanned once)
     pub results: Vec<usize>, // indices into `all` matching the query
     pub cursor: usize,
+    pub recent: std::collections::HashSet<String>, // display paths that are recents
 }
 
 impl Picker {
@@ -60,11 +61,14 @@ pub struct App {
     pub focus: usize,
     pub mode: Mode,
     pub glance: bool,
+    pub help: bool,
+    pub blink: bool,
     pub picker: Option<Picker>,
     pub compose: Option<String>, // Some(text) while composing a broadcast (^b)
     pub should_quit: bool,
     db: Connection,
     settings: PathBuf,
+    bus_dirs: std::collections::HashMap<String, PathBuf>, // group → its shared hcom bus dir
     last_poll: Instant,
     last_size: (u16, u16),
 }
@@ -79,11 +83,14 @@ impl App {
             focus: 0,
             mode: Mode::Nav,
             glance: false,
+            help: false,
+            blink: false,
             picker: None,
             compose: None,
             should_quit: false,
             db,
             settings,
+            bus_dirs: std::collections::HashMap::new(),
             last_poll: Instant::now() - Duration::from_secs(1),
             last_size: (80, 24),
         })
@@ -129,6 +136,13 @@ impl App {
         }
     }
 
+    pub fn firstblocked_label(&self) -> Option<String> {
+        self.tiles
+            .iter()
+            .find(|t| t.status == "blocked")
+            .map(|t| format!("{}/{}", t.group, t.role))
+    }
+
     // ---- status + spawn-request polling ----
 
     pub fn poll(&mut self, cols: u16, rows: u16) {
@@ -137,6 +151,7 @@ impl App {
             return;
         }
         self.last_poll = Instant::now();
+        self.blink = !self.blink;
         if let Ok(map) = db::statuses(&self.db) {
             for t in self.tiles.iter_mut() {
                 if let Some(s) = map.get(&t.id) {
@@ -157,19 +172,27 @@ impl App {
     /// open_project spawns a Lead Claude in dir as a new group (group of one).
     pub fn open_project(&mut self, dir: PathBuf, cols: u16, rows: u16) -> Result<()> {
         let group = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
+        crate::recents::push(&dir);
         self.spawn_into(&group, "lead", dir, None, cols, rows)
     }
 
     fn spawn_into(&mut self, group: &str, role: &str, dir: PathBuf, brief: Option<String>, cols: u16, rows: u16) -> Result<()> {
         let id = db::random_id();
         db::insert_session(&self.db, &id, group, &dir.to_string_lossy(), role)?;
+        // The whole group shares ONE hcom bus: pin it to the first tile's dir so
+        // cross-repo agents (omni spawn --dir elsewhere) still talk on one bus.
+        let hcom_dir = self
+            .bus_dirs
+            .entry(group.to_string())
+            .or_insert_with(|| launch::hcom_dir(&dir, group))
+            .clone();
         let spec = LaunchSpec {
             dir: dir.clone(),
             id: id.clone(),
             room: group.to_string(),
             role: role.to_string(),
             settings: self.settings.clone(),
-            hcom_dir: launch::hcom_dir(&dir, group),
+            hcom_dir,
             brief,
         };
         let _ = std::fs::create_dir_all(&spec.hcom_dir);
@@ -192,7 +215,11 @@ impl App {
     /// tagged decision (hcom broadcast within the room's bus).
     fn broadcast(&self, text: &str) {
         let Some(t) = self.focused() else { return };
-        let hcom_dir = launch::hcom_dir(&t.project, &t.group);
+        let hcom_dir = self
+            .bus_dirs
+            .get(&t.group)
+            .cloned()
+            .unwrap_or_else(|| launch::hcom_dir(&t.project, &t.group));
         let _ = std::process::Command::new("hcom")
             .args(["send", "--from", "omni", "--", text])
             .env("HCOM_DIR", hcom_dir)
@@ -202,6 +229,15 @@ impl App {
     // ---- input ----
 
     pub fn on_key(&mut self, k: KeyEvent, cols: u16, rows: u16) -> Result<()> {
+        if self.help {
+            // any key dismisses help
+            if !matches!(k.code, KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL)) {
+                self.help = false;
+            } else {
+                self.should_quit = true;
+            }
+            return Ok(());
+        }
         if self.picker.is_some() {
             return self.picker_key(k, cols, rows);
         }
@@ -210,7 +246,7 @@ impl App {
             return Ok(());
         }
         match self.mode {
-            Mode::Nav => self.nav_key(k),
+            Mode::Nav => self.nav_key(k, cols, rows),
             Mode::Insert => {
                 if k.code == KeyCode::Char('\\') && k.modifiers.contains(KeyModifiers::CONTROL) {
                     self.mode = Mode::Nav;
@@ -222,11 +258,12 @@ impl App {
         Ok(())
     }
 
-    fn nav_key(&mut self, k: KeyEvent) {
+    fn nav_key(&mut self, k: KeyEvent, cols: u16, rows: u16) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match k.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('c') if ctrl => self.should_quit = true,
+            KeyCode::Char('?') => self.help = true,
             KeyCode::Char('n') if ctrl => self.open_picker(),
             KeyCode::Char('b') if ctrl => {
                 if self.focused().is_some() {
@@ -235,9 +272,18 @@ impl App {
             }
             KeyCode::Char('z') => self.glance = !self.glance,
             KeyCode::Char('!') => self.jump_blocked(),
-            KeyCode::Char('i') | KeyCode::Enter => {
+            KeyCode::Char('i') => {
                 if !self.tiles.is_empty() {
                     self.mode = Mode::Insert;
+                }
+            }
+            KeyCode::Enter => {
+                if !self.tiles.is_empty() {
+                    self.mode = Mode::Insert;
+                } else if let Some(last) = crate::recents::list().into_iter().next() {
+                    if last.is_dir() {
+                        let _ = self.open_project(last, cols, rows);
+                    }
                 }
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Down => self.move_focus(1),
@@ -272,9 +318,14 @@ impl App {
     }
 
     fn open_picker(&mut self) {
-        let all = find_projects();
+        let mut all = find_projects();
+        // surface recents first (in recency order), then the rest alphabetically
+        let rec: Vec<String> = crate::recents::list().iter().map(|p| crate::recents::display(p)).collect();
+        let rank = |path: &str| rec.iter().position(|r| r == path).map(|i| i as i64).unwrap_or(i64::MAX);
+        all.sort_by(|a, b| rank(&a.path).cmp(&rank(&b.path)).then_with(|| a.path.cmp(&b.path)));
+        let recent: std::collections::HashSet<String> = rec.into_iter().collect();
         let results = (0..all.len()).collect();
-        self.picker = Some(Picker { query: String::new(), all, results, cursor: 0 });
+        self.picker = Some(Picker { query: String::new(), all, results, cursor: 0, recent });
     }
 
     fn picker_key(&mut self, k: KeyEvent, cols: u16, rows: u16) -> Result<()> {
@@ -365,6 +416,42 @@ fn find_under(root: PathBuf, home_s: &str) -> Vec<Proj> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_app() -> App {
+        let db = Connection::open_in_memory().unwrap();
+        App {
+            tiles: Vec::new(),
+            focus: 0,
+            mode: Mode::Nav,
+            glance: false,
+            help: false,
+            blink: false,
+            picker: None,
+            compose: None,
+            should_quit: false,
+            db,
+            settings: PathBuf::new(),
+            bus_dirs: std::collections::HashMap::new(),
+            last_poll: Instant::now(),
+            last_size: (120, 40),
+        }
+    }
+
+    // Headless render smoke test: the non-terminal screens (empty + recents,
+    // help overlay, empty picker) must lay out without panicking.
+    #[test]
+    fn screens_render_without_panic() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = test_app();
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::draw(f, &mut app)).unwrap(); // empty
+        app.help = true;
+        term.draw(|f| crate::ui::draw(f, &mut app)).unwrap(); // help overlay
+        app.help = false;
+        app.picker = Some(Picker { query: "pay".into(), all: Vec::new(), results: Vec::new(), cursor: 0, recent: Default::default() });
+        term.draw(|f| crate::ui::draw(f, &mut app)).unwrap(); // picker (no matches)
+    }
 
     #[test]
     fn finds_git_repos_recursively() {

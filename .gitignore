@@ -13,3 +13,5 @@
 
 # rust
 /target
+.omni/*/.claude/
+.omni/*/.hcom/

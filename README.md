@@ -86,20 +86,23 @@ Open a project with `^n`, pick a repo, and Claude starts live in a tile. Press
 | `^b` | **broadcast** a decision to the focused tile's group (type, `⏎` to send) |
 | `z` | **glance** mode (compact keep-an-eye cards) |
 | `!` | **jump** to a blocked agent |
-| `q` | quit |
+| `?` | help · `q` quit |
+
+On the empty screen, `⏎` resumes your most recent project.
 
 ### Spawning collaborators
 
 A Lead is launched knowing it can grow its own group at runtime:
 
 ```sh
-omni spawn <room> <role> [brief]
+omni spawn <room> <role> [--dir <path>] [brief]
 ```
 
 Running this from inside a Lead (Claude shells out to it) queues an agent that
 the dashboard picks up and opens as a new tile in that group, wired to the same
-hcom bus. Answer a blocked agent by typing in its tile; share a decision with
-everyone via `^b`.
+hcom bus. `--dir` places the agent in **another repo** while keeping it on the
+group's shared bus (cross-repo groups). Answer a blocked agent by typing in its
+tile; share a decision with everyone via `^b`.
 
 ## Screens
 
@@ -147,7 +150,8 @@ legacy-go/    the previous Go prototype, kept for reference
 - [x] Live embedded terminals, groups, focus/insert
 - [x] Status via hooks → `state.db` (blocked/idle/done)
 - [x] hcom bus, broadcast, dynamic `omni spawn`
-- [x] Home-wide git-repo project picker
+- [x] Home-wide git-repo project picker (with recents + fuzzy highlight)
+- [x] Cross-repo groups (`omni spawn --dir`), glance mode, help, resume-last
 - [ ] **Persistence across restarts** — omni currently owns the PTYs
   in-process, so quitting ends the sessions. A detach/daemon split (PTY host +
   TUI client) is the next milestone — see

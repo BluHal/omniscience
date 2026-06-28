@@ -6,6 +6,7 @@ mod app;
 mod db;
 mod hooks;
 mod launch;
+mod recents;
 mod term;
 mod theme;
 mod ui;
@@ -62,17 +63,29 @@ fn run_hook(event: &str) {
 /// run_spawn queues a request the running dashboard picks up (a Lead shells out
 /// to this to add an agent to its group).
 fn run_spawn(args: &[String]) -> Result<()> {
-    if args.len() < 2 {
-        eprintln!("usage: omni spawn <room> <role> [brief]");
+    // optional --dir <path> places the agent in another repo (cross-repo group)
+    let mut dir: Option<String> = None;
+    let mut pos: Vec<String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--dir" | "-C" => dir = it.next().cloned(),
+            _ => pos.push(a.clone()),
+        }
+    }
+    if pos.len() < 2 {
+        eprintln!("usage: omni spawn [--dir <path>] <room> <role> [brief]");
         std::process::exit(2);
     }
-    let room = &args[0];
-    let role = &args[1];
-    let brief = args.get(2..).map(|s| s.join(" ")).unwrap_or_default();
-    let project = std::env::current_dir()?.to_string_lossy().to_string();
+    let (room, role) = (&pos[0], &pos[1]);
+    let brief = pos.get(2..).map(|s| s.join(" ")).unwrap_or_default();
+    let project = match dir {
+        Some(d) => std::fs::canonicalize(&d).unwrap_or_else(|_| std::path::PathBuf::from(d)).to_string_lossy().into_owned(),
+        None => std::env::current_dir()?.to_string_lossy().into_owned(),
+    };
     let conn = db::open(&db::db_path())?;
     db::enqueue_spawn(&conn, room, role, &project, &brief)?;
-    println!("spawn queued: {room}/{role}");
+    println!("spawn queued: {room}/{role} @ {project}");
     Ok(())
 }
 

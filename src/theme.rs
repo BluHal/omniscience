@@ -34,6 +34,7 @@ pub const LIVE: &str = "⠿";
 pub const FOCUS_G: &str = "⌖";
 pub const CAST_G: &str = "✷";
 pub const ROW: &str = "▸";
+pub const RECENT: &str = "↺";
 pub const SEARCH: &str = "⌕";
 
 /// status_color maps a session status to its design color.
