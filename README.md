@@ -73,20 +73,21 @@ omni
 ## Usage
 
 Open a project with `^n`, pick a repo, and Claude starts live in a tile. Press
-`i` to type into it, `^\` to step back out to navigation.
+`i` to type into it, double-tap `esc` to step back out to navigation.
 
 | Key | Action |
 |-----|--------|
 | `^n` | **new project** — fuzzy picker over git repos under `~`, opens Claude in a tile |
 | `i` / `⏎` | **type** into the focused tile (insert mode) |
-| `^\` | back to **nav** mode |
+| `esc esc` / `^\` | back to **nav** mode without interrupting Claude (a lone `esc` still reaches it) |
 | `↹` · arrows | move **focus** between tiles |
 | `^b` | **broadcast** a decision to the focused tile's group (type, `⏎` to send) |
 | `z` | **glance** mode (compact keep-an-eye cards) |
 | `!` | **jump** to a blocked agent |
 | `?` | help · `q` quit |
 
-On the empty screen, `⏎` resumes your most recent project.
+On the welcome screen, use `↑`/`↓` to move between **open a project** and your
+recent projects, then `⏎` to open the highlighted one.
 
 ### Spawning collaborators
 
@@ -101,6 +102,22 @@ the dashboard picks up and opens as a new tile in that group, wired to the same
 hcom bus. `--dir` places the agent in **another repo** while keeping it on the
 group's shared bus (cross-repo groups). Answer a blocked agent by typing in its
 tile; share a decision with everyone via `^b`.
+
+### The message bus
+
+Every tile opens with a first-run prompt to `hcom start`, which joins the
+session to its group's [hcom](https://github.com/aannoo/hcom) bus. From then on
+the bus hooks fire each turn to deliver messages and status — that's what lets
+agents talk and `^b` broadcasts land.
+
+If a session doesn't need the bus — a solo project, or the cross-agent chatter
+gets noisy — stop it by hand from inside that tile:
+
+```sh
+hcom stop          # disconnect this session; re-join later with hcom start
+```
+
+`hcom start` rejoins whenever you want it back.
 
 ## Screens
 
