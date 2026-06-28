@@ -1,0 +1,22 @@
+[package]
+name = "omni"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal dashboard to run and watch many live Claude Code sessions side by side"
+
+[[bin]]
+name = "omni"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+tui-term = "0.2"
+vt100 = "0.15"
+portable-pty = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+anyhow = "1"
+dirs = "5"
+
+[profile.release]
+opt-level = 2

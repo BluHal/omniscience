@@ -10,3 +10,6 @@
 
 # hcom per-room bus state (runtime)
 .omni/*/.hcom/
+
+# rust
+/target
