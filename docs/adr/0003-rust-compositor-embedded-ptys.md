@@ -10,7 +10,7 @@ not a status peek or a polled mirror.
 ## Status
 
 Accepted. **Supersedes ADR-0001** (Zellij as engine + Go controller) and retires
-the Go implementation (moved to `legacy-go/` for reference).
+the Go implementation (preserved in git history).
 
 ## Why
 

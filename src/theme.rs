@@ -19,8 +19,6 @@ pub const IDLE: Color = Color::Rgb(0x94, 0xa3, 0xd4);
 pub const DONE: Color = Color::Rgb(0x4f, 0xd6, 0xa0);
 pub const FOCUS: Color = Color::Rgb(0x79, 0xe9, 0xee);
 pub const CAST: Color = Color::Rgb(0xf5, 0x6f, 0xd0);
-pub const BLOCK_BG: Color = Color::Rgb(0x2a, 0x12, 0x12);
-pub const FOCUS_BG: Color = Color::Rgb(0x10, 0x22, 0x2b);
 
 // Glyphs
 pub const BRAND: &str = "◆";
@@ -28,9 +26,6 @@ pub const BLOCKED: &str = "◍";
 pub const WORKING: &str = "●";
 pub const IDLE_G: &str = "○";
 pub const DONE_G: &str = "✓";
-pub const RUN: &str = "⏵";
-pub const SHELL: &str = "❯";
-pub const LIVE: &str = "⠿";
 pub const FOCUS_G: &str = "⌖";
 pub const CAST_G: &str = "✷";
 pub const ROW: &str = "▸";

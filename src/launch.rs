@@ -54,12 +54,6 @@ pub fn hcom_dir(project: &Path, room: &str) -> PathBuf {
     project.join(".omni").join(room).join(".hcom")
 }
 
-/// project_roots are the dirs the picker scans one level deep.
-pub fn project_roots() -> Vec<PathBuf> {
-    let home = dirs::home_dir().unwrap_or_default();
-    ["work", "src", "dev"].iter().map(|s| home.join(s)).collect()
-}
-
 /// git_branch reads .git/HEAD for a quick branch label.
 pub fn git_branch(dir: &Path) -> String {
     match std::fs::read_to_string(dir.join(".git").join("HEAD")) {

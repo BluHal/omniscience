@@ -37,8 +37,6 @@ this the way I wanted:
   private bus; unrelated projects stay mute to each other.
 - **Built exactly my way** — a personal daily-driver, lazygit-style.
 
-See [SPEC.md](SPEC.md) for the full rationale and the landscape it grew out of.
-
 ## Features
 
 - 🪟 **Live embedded terminals** — every tile runs a real `claude` in its own
@@ -141,8 +139,6 @@ handoff. Design and engineering decisions are recorded as ADRs in
 src/          Rust source (compositor, terminals, state, launch)
 docs/adr/     architecture decision records
 CONTEXT.md    domain glossary
-SPEC.md       product spec & rationale
-legacy-go/    the previous Go prototype, kept for reference
 ```
 
 ## Roadmap
@@ -163,5 +159,4 @@ legacy-go/    the previous Go prototype, kept for reference
 [hcom](https://github.com/aannoo/hcom) ·
 [Recon](https://agent-wars.com/news/2026-03-14-recon-tmux-tui-claude-code-sessions) ·
 [VibeMux](https://github.com/UgOrange/vibemux) ·
-[claude-squad](https://github.com/smtg-ai/claude-squad) —
-[SPEC.md](SPEC.md) explains how Omniscience differs.
+[claude-squad](https://github.com/smtg-ai/claude-squad)

@@ -1,7 +1,3 @@
-// Some theme glyphs/colors and helpers are defined ahead of the screens that use
-// them — don't warn on the not-yet-wired ones.
-#![allow(dead_code)]
-
 mod app;
 mod db;
 mod hooks;

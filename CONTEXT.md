@@ -3,7 +3,7 @@
 A terminal dashboard to launch, monitor, and **drive** multiple live Claude Code
 sessions side-by-side — across the same or different projects — with isolated
 groups where agents collaborate. This glossary fixes the language; design
-decisions live in `docs/adr/`, the spec in `SPEC.md`.
+decisions live in `docs/adr/`.
 
 ## Language
 
@@ -27,7 +27,7 @@ A **Lead** Session plus the agents it spawned, sharing **one hcom bus** and
 rendered as nested Tiles (the "big tile holding 3 sub-tiles"). The unit of
 collaboration and isolation: distinct Groups never share a bus. A lone Session
 is a Group of one. A Group can span multiple Projects (e.g. a frontend agent in
-one repo, a backend agent in another). **Replaces the old "Room"** (SPEC dec. 4).
+one repo, a backend agent in another). **Replaces the old "Room"** (ADR-0002).
 _Avoid_: room, team, session-group.
 
 **Lead**:
@@ -41,7 +41,7 @@ A non-Lead Session spawned into a Group by its Lead. (The Lead is also "an
 agent" loosely, but "Agent" alone means a spawned member.)
 
 **Dashboard**:
-The single Zellij workspace `omni` runs, where every Group's Tiles are laid out
+The single surface `omni` renders, where every Group's Tiles are laid out
 together. It is not a separate viewer over the Sessions — it *is* the surface
 the Sessions live in.
 _Avoid_: monitor, overview, TUI.

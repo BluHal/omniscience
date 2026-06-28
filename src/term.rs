@@ -16,13 +16,12 @@ pub struct Term {
     child: Box<dyn Child + Send + Sync>,
     pub rows: u16,
     pub cols: u16,
-    pub title: String,
 }
 
 impl Term {
     /// spawn starts cmd in a fresh PTY sized rows×cols and begins streaming its
     /// output into a vt100 parser on a background thread.
-    pub fn spawn(cmd: CommandBuilder, rows: u16, cols: u16, title: impl Into<String>) -> Result<Term> {
+    pub fn spawn(cmd: CommandBuilder, rows: u16, cols: u16) -> Result<Term> {
         let rows = rows.max(1);
         let cols = cols.max(1);
         let pty = native_pty_system();
@@ -49,7 +48,7 @@ impl Term {
                 }
             });
         }
-        Ok(Term { parser, master: pair.master, writer, child, rows, cols, title: title.into() })
+        Ok(Term { parser, master: pair.master, writer, child, rows, cols })
     }
 
     /// resize the PTY and parser to match a new tile size (idempotent).

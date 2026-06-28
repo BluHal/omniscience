@@ -70,7 +70,6 @@ pub struct App {
     settings: PathBuf,
     bus_dirs: std::collections::HashMap<String, PathBuf>, // group → its shared hcom bus dir
     last_poll: Instant,
-    last_size: (u16, u16),
 }
 
 impl App {
@@ -92,7 +91,6 @@ impl App {
             settings,
             bus_dirs: std::collections::HashMap::new(),
             last_poll: Instant::now() - Duration::from_secs(1),
-            last_size: (80, 24),
         })
     }
 
@@ -146,7 +144,6 @@ impl App {
     // ---- status + spawn-request polling ----
 
     pub fn poll(&mut self, cols: u16, rows: u16) {
-        self.last_size = (cols, rows);
         if self.last_poll.elapsed() < Duration::from_millis(500) {
             return;
         }
@@ -196,7 +193,7 @@ impl App {
             brief,
         };
         let _ = std::fs::create_dir_all(&spec.hcom_dir);
-        let term = Term::spawn(launch::claude_command(&spec), rows.max(4), cols.max(20), group)?;
+        let term = Term::spawn(launch::claude_command(&spec), rows.max(4), cols.max(20))?;
         self.tiles.push(Tile {
             term,
             id,
@@ -433,7 +430,6 @@ mod tests {
             settings: PathBuf::new(),
             bus_dirs: std::collections::HashMap::new(),
             last_poll: Instant::now(),
-            last_size: (120, 40),
         }
     }
 
