@@ -13,7 +13,7 @@ import (
 // session is one row of ~/.omni/state.db — the status of a single agent.
 type session struct {
 	ID, Room, ProjectPath, Role, TmuxPane, Model, Status, CurrentActivity string
-	StartedAt, LastEventAt                                                 int64
+	StartedAt, LastEventAt                                                int64
 }
 
 // dbPath resolves the state.db location. Hook subprocesses get it via OMNI_DB

@@ -7,3 +7,6 @@
 /dashboard
 /omniscience
 /.claude/worktrees/
+
+# hcom per-room bus state (runtime)
+.omni/*/.hcom/

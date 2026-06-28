@@ -68,6 +68,43 @@ func up(room string) error {
 	return nil
 }
 
+// launchLead starts a bare Lead session in dir — the dashboard's project-picker
+// flow (^n). A new tmux window runs plain claude wired to omni's hooks + a fresh
+// per-group hcom bus, with a state.db row so it shows up live. The group name is
+// the directory's basename; the Lead joins the bus and waits for the user's
+// first prompt. Reuses the shared spawnAgent launch path.
+func launchLead(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	group := filepath.Base(abs)
+	dbp := dbPath()
+	db, err := openDB(dbp)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	settingsPath, err := writeHookSettings(self, filepath.Dir(dbp))
+	if err != nil {
+		return err
+	}
+	if err := ensureSession(abs); err != nil {
+		return err
+	}
+	hcomDir := filepath.Join(abs, ".omni", group, ".hcom")
+	if err := os.MkdirAll(hcomDir, 0o755); err != nil {
+		return err
+	}
+	prompt := launchPrompt("lead", "await the user's instructions, then work in this project.")
+	_, _, err = spawnAgent(db, group, "lead", abs, dbp, settingsPath, hcomDir, prompt)
+	return err
+}
+
 // spawn adds ONE agent to an existing live room at runtime (SPEC decision 13):
 // the same launch path as up (omni's status hooks + the room's hcom bus + a
 // state.db row), so the agent shows up live in the dashboard with no restart.

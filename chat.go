@@ -14,7 +14,7 @@ import (
 // roles (the dashboard's column keys). broadcast distinguishes a room-wide
 // decision from a direct message (SPEC decision 11).
 type chatEntry struct {
-	from      string   // resolved sender role (or raw hcom name if unresolved)
+	from      string // resolved sender role (or raw hcom name if unresolved)
 	text      string
 	broadcast bool     // room-wide decision broadcast vs a direct message
 	toRoles   []string // resolved recipient roles (direct messages only)

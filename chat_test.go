@@ -47,10 +47,10 @@ func TestResolveAgentName(t *testing.T) {
 // and nothing else.
 func TestChatFor(t *testing.T) {
 	all := []chatEntry{
-		{from: "frontend", text: "scaffolding", broadcast: false},                 // authored by FE
-		{from: "backend", text: "JWT or opaque?", toRoles: []string{"frontend"}},   // BE -> FE direct
-		{from: "omni", text: "use JWT", toRoles: []string{"backend"}},              // you -> BE direct
-		{from: "backend", text: "migrations done", broadcast: true},               // broadcast (all)
+		{from: "frontend", text: "scaffolding", broadcast: false},                // authored by FE
+		{from: "backend", text: "JWT or opaque?", toRoles: []string{"frontend"}}, // BE -> FE direct
+		{from: "omni", text: "use JWT", toRoles: []string{"backend"}},            // you -> BE direct
+		{from: "backend", text: "migrations done", broadcast: true},              // broadcast (all)
 	}
 
 	fe := chatFor(all, "frontend")
