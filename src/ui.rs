@@ -32,10 +32,28 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         hero(f, app, body);
     }
-    footer(f, app, rows[2]);
+    if app.compose.is_some() {
+        compose_bar(f, app, rows[2]);
+    } else {
+        footer(f, app, rows[2]);
+    }
     if picker_open {
         picker(f, app, body);
     }
+}
+
+fn compose_bar(f: &mut Frame, app: &App, area: Rect) {
+    f.render_widget(Block::default().style(Style::default().bg(BAR)), area);
+    let group = app.focused().map(|t| t.group.clone()).unwrap_or_default();
+    let text = app.compose.clone().unwrap_or_default();
+    let line = Line::from(vec![
+        Span::styled(format!(" {} broadcast → {}: ", CAST_G, group), bold(CAST)),
+        Span::styled(text, sty(TXT)),
+        Span::styled("▌", sty(CAST)),
+        Span::styled("   ⏎ send · esc cancel", sty(FAINT)),
+    ]);
+    let pad = Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area };
+    f.render_widget(Paragraph::new(line).style(Style::default().bg(BAR)), pad);
 }
 
 fn top_bar(f: &mut Frame, app: &App, area: Rect) {
