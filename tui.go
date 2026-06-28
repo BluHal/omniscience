@@ -96,11 +96,19 @@ type tuiModel struct {
 	inRoom  bool
 	roomCur int
 	agtCur  int
+
+	width, height int
+	chat          []chatEntry // open room's hcom messages (read live)
+	chatErr       error
 }
 
 type tickMsg time.Time
 type sessionsMsg struct {
 	rows []session
+	err  error
+}
+type chatLoadedMsg struct {
+	rows []chatEntry
 	err  error
 }
 
@@ -117,34 +125,41 @@ func refresh(db *sql.DB) tea.Cmd {
 	}
 }
 
+func loadChatCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		rows, err := loadChat(path)
+		return chatLoadedMsg{rows, err}
+	}
+}
+
+// openHcomDB is the bus db of the currently open room, or "" if none is open or
+// the room has no bus (drives the live chat poll).
+func (m tuiModel) openHcomDB() string {
+	if !m.inRoom || m.roomCur >= len(m.rooms) {
+		return ""
+	}
+	return roomHcomDB(m.rooms[m.roomCur])
+}
+
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "up", "k":
-			if m.inRoom {
-				m.agtCur--
-			} else {
-				m.roomCur--
-			}
-		case "down", "j":
-			if m.inRoom {
-				m.agtCur++
-			} else {
-				m.roomCur++
-			}
-		case "enter", "l", "right":
-			if !m.inRoom && m.roomCur < len(m.rooms) && len(m.rooms[m.roomCur].agents) > 0 {
-				m.inRoom, m.agtCur = true, 0
-			}
-		case "esc", "h", "left":
-			m.inRoom = false
+		if m.inRoom {
+			return m.keyInRoom(msg)
 		}
-		m.clamp()
+		return m.keyRooms(msg)
 	case tickMsg:
-		return m, tea.Batch(refresh(m.db), tick())
+		// The chat poll rides the same tick as the status poll, so the TILED
+		// view refreshes live as agents post to the bus.
+		cmds := []tea.Cmd{refresh(m.db), tick()}
+		if p := m.openHcomDB(); p != "" {
+			cmds = append(cmds, loadChatCmd(p))
+		}
+		return m, tea.Batch(cmds...)
+	case chatLoadedMsg:
+		m.chat, m.chatErr = msg.rows, msg.err
 	case sessionsMsg:
 		m.err = msg.err
 		// Keep selection stable across the regroup: remember what's selected,
@@ -160,6 +175,45 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.restore(selRoom, selAgent)
 		m.clamp()
 	}
+	return m, nil
+}
+
+// keyRooms handles keys on the rooms list: navigate and open a room.
+func (m tuiModel) keyRooms(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "up", "k":
+		m.roomCur--
+	case "down", "j":
+		m.roomCur++
+	case "enter", "l", "right":
+		if m.roomCur < len(m.rooms) && len(m.rooms[m.roomCur].agents) > 0 {
+			m.inRoom, m.agtCur = true, 0
+			m.chat, m.chatErr = nil, nil // clear stale chat; tick repopulates
+			return m, loadChatCmd(m.openHcomDB())
+		}
+	}
+	m.clamp()
+	return m, nil
+}
+
+// keyInRoom handles keys while a room is open. Focus moves between agent columns
+// with the arrows; esc returns to the rooms list. (Compose/send #6 and tmux
+// attach #4 add their keys here.)
+func (m tuiModel) keyInRoom(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.inRoom = false
+		m.chat, m.chatErr = nil, nil
+	case "up", "left":
+		m.agtCur--
+	case "down", "right":
+		m.agtCur++
+	}
+	m.clamp()
 	return m, nil
 }
 
@@ -238,24 +292,118 @@ func (m tuiModel) viewRooms(b *strings.Builder) {
 	b.WriteString("\n  ↑↓/jk move · enter open · q quit\n")
 }
 
+// viewRoom renders the open room TILED (SPEC decision 12): one column per agent,
+// side by side. Each column header carries the agent's status/activity/last-event
+// age (issue #1); below it, that agent's hcom messages (issue #3). The focused
+// column is bracketed.
 func (m tuiModel) viewRoom(b *strings.Builder) {
 	r := m.rooms[m.roomCur]
-	fmt.Fprintf(b, "  room: %s\n\n", r.name)
-	for i, a := range r.agents {
-		cur := " "
-		if i == m.agtCur {
-			cur = ">"
-		}
-		mark := " "
-		if a.Status == "blocked" {
-			mark = "●"
-		}
-		act := ""
-		if a.CurrentActivity != "" {
-			act = " · " + a.CurrentActivity
-		}
-		fmt.Fprintf(b, "  %s %s %-12s %-8s%-18s %s\n",
-			cur, mark, a.Role, a.Status, act, since(a.LastEventAt))
+	fmt.Fprintf(b, "  room: %s\n", r.name)
+	if m.chatErr != nil {
+		fmt.Fprintf(b, "  chat error: %v\n", m.chatErr)
 	}
-	b.WriteString("\n  ↑↓/jk move · esc back · q quit\n")
+	b.WriteString("\n")
+
+	const msgRows = 8
+	n := len(r.agents)
+	colW := m.colWidth(n)
+	cols := make([][]string, n)
+	for i, a := range r.agents {
+		head := a.Role
+		if i == m.agtCur {
+			head = "[" + a.Role + "]"
+		}
+		mark := "  "
+		if a.Status == "blocked" {
+			mark = "● "
+		}
+		meta := a.Status + " · " + since(a.LastEventAt)
+		if a.CurrentActivity != "" {
+			meta = a.Status + " · " + a.CurrentActivity
+		}
+		col := []string{
+			truncPad(mark+head, colW),
+			truncPad("  "+meta, colW),
+			strings.Repeat("─", colW),
+		}
+		col = append(col, m.chatLines(r, a, colW, msgRows)...)
+		cols[i] = col
+	}
+
+	rowsN := 0
+	for _, c := range cols {
+		if len(c) > rowsN {
+			rowsN = len(c)
+		}
+	}
+	for row := 0; row < rowsN; row++ {
+		b.WriteString("  ")
+		for _, c := range cols {
+			cell := strings.Repeat(" ", colW)
+			if row < len(c) {
+				cell = c[row]
+			}
+			b.WriteString(cell + " │ ")
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n  ←→/↑↓ focus agent · esc back · q quit\n")
+}
+
+// chatLines renders one column's message body: broadcasts (◆) and directs for
+// this agent, last msgRows of them, each padded to the column width. A no-bus
+// room or an empty thread renders a single clean placeholder.
+func (m tuiModel) chatLines(r room, a session, colW, msgRows int) []string {
+	if r.name == noRoom {
+		return []string{truncPad("(no bus)", colW)}
+	}
+	msgs := chatFor(m.chat, a.Role)
+	if len(msgs) == 0 {
+		return []string{truncPad("—", colW)}
+	}
+	if len(msgs) > msgRows {
+		msgs = msgs[len(msgs)-msgRows:]
+	}
+	out := make([]string, 0, len(msgs))
+	for _, e := range msgs {
+		prefix := e.from + ": "
+		if e.broadcast {
+			prefix = "◆ " + e.from + ": " // decision broadcast marker (issue #6)
+		}
+		out = append(out, truncPad(prefix+e.text, colW))
+	}
+	return out
+}
+
+// colWidth splits the terminal across n agent columns, clamped to a readable
+// range. Falls back to a sane width before the first WindowSizeMsg.
+func (m tuiModel) colWidth(n int) int {
+	w := m.width
+	if w <= 0 {
+		w = 100
+	}
+	colW := (w-2)/n - 3
+	if colW < 16 {
+		colW = 16
+	}
+	if colW > 40 {
+		colW = 40
+	}
+	return colW
+}
+
+// truncPad fits s to exactly w runes: padded with spaces or truncated with an
+// ellipsis. Plain text only (no inline ANSI) so column alignment survives.
+func truncPad(s string, w int) string {
+	r := []rune(s)
+	if len(r) == w {
+		return s
+	}
+	if len(r) < w {
+		return s + strings.Repeat(" ", w-len(r))
+	}
+	if w <= 1 {
+		return string(r[:w])
+	}
+	return string(r[:w-1]) + "…"
 }
