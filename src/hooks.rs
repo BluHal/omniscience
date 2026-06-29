@@ -57,6 +57,15 @@ fn build_settings(omni_bin: &str, hcom: &Value) -> Value {
             hooks.insert(k.clone(), v.clone());
         }
     }
+    // Drop hcom's Stop hook (`hcom poll`): on idle it long-polls the bus for the
+    // configured timeout, and hcom ignores HCOM_TIMEOUT for PTY-hosted agents (our
+    // tiles), so it blocks the prompt for the 24h config default — the tile never
+    // frees for typing. omni tiles are human-driven and interactive-first: an idle
+    // agent shouldn't hold its turn open. Messages still arrive mid-work via the
+    // PostToolUse hook, and anything pending is delivered on the next prompt
+    // (UserPromptSubmit), so nothing is lost — the agent just doesn't auto-react
+    // while idle. omni's own Stop status hook is added below.
+    hooks.remove("Stop");
     // prepend omni's status hook so it runs before hcom's bus delivery
     for (ev, verb) in omni_hooks {
         let existing = hooks.get(ev).and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -73,4 +82,27 @@ fn build_settings(omni_bin: &str, hcom: &Value) -> Value {
         settings.insert("permissions".into(), perms.clone());
     }
     Value::Object(settings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The merge drops hcom's long-polling Stop hook (it blocks the tile) but keeps
+    // omni's own Stop status hook and every other hcom hook (e.g. PostToolUse).
+    #[test]
+    fn merge_drops_hcom_stop_poll_keeps_the_rest() {
+        let hcom = json!({
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "hcom poll"}]}],
+                "PostToolUse": [{"hooks": [{"type": "command", "command": "hcom post"}]}],
+            }
+        });
+        let merged = build_settings("/bin/omni", &hcom);
+        let s = serde_json::to_string(&merged["hooks"]).unwrap();
+        let stop = merged["hooks"]["Stop"].to_string();
+        assert!(stop.contains("/bin/omni hook stop"), "omni Stop hook kept: {stop}");
+        assert!(!stop.contains("poll"), "hcom poll dropped from Stop: {stop}");
+        assert!(s.contains("hcom post"), "other hcom hooks preserved: {s}");
+    }
 }

@@ -56,7 +56,7 @@ fn help(f: &mut Frame, area: Rect) {
         Line::raw(""),
         keyline("^n", "new project — fuzzy picker over git repos"),
         keyline("i / ⏎", "type into the focused tile (insert)"),
-        keyline("^\\", "back to nav mode"),
+        keyline("esc esc / ^\\", "back to nav mode"),
         keyline("↹ / arrows", "move focus between tiles"),
         keyline("^b", "broadcast a decision to the group"),
         keyline("z", "glance mode (compact keep-an-eye cards)"),
@@ -173,7 +173,7 @@ fn footer(f: &mut Frame, app: &App, area: Rect) {
         for s in hint("⏎", "open", TXT) { spans.push(s); }
         for s in hint("esc", "cancel", TXT) { spans.push(s); }
     } else if app.mode == Mode::Insert {
-        for s in hint("^\\", "back to nav", FOCUS) { spans.push(s); }
+        for s in hint("esc esc", "back to nav", FOCUS) { spans.push(s); }
         spans.push(Span::styled("typing into focused tile…", sty(DIM)));
     } else {
         for s in hint("↹", "focus", TXT) { spans.push(s); }
@@ -198,32 +198,52 @@ fn footer(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn empty(f: &mut Frame, _app: &App, area: Rect) {
-    let recents = crate::recents::list();
-    let mut lines = vec![
-        Line::from(vec![Span::styled("omni", bold(TXT)), Span::raw("  "), Span::styled("オムニ", sty(DIM))]).alignment(Alignment::Center),
-        Line::raw(""),
-        Line::from(Span::styled("run & watch many live coding sessions, side by side", sty(DIM))).alignment(Alignment::Center),
-        Line::raw(""),
-        Line::from(vec![Span::styled("⏵ ", sty(FOCUS)), Span::styled("^n", bold(TXT)), Span::styled("   open a project", sty(TXT))]),
-    ];
-    if let Some(last) = recents.first() {
-        lines.push(Line::from(vec![
-            Span::styled("⏵ ", sty(DIM)),
-            Span::styled("⏎ ", bold(TXT)),
-            Span::styled(format!("  resume last — {}", crate::recents::display(last)), sty(DIM)),
-        ]));
-    } else {
-        lines.push(Line::from(vec![Span::styled("⏵ ", sty(DIM)), Span::styled("i ", bold(TXT)), Span::styled("  type into the focused tile", sty(DIM))]));
-    }
-    if !recents.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled("RECENTS · 履歴", sty(FAINT))));
-        for r in recents.iter().take(3) {
-            lines.push(Line::from(vec![Span::styled(format!("{} ", RECENT), sty(FAINT)), Span::styled(crate::recents::display(r), sty(IDLE))]));
+// OMNI_CELLS: the title as 5 rows of fixed-width block letters (o m n i).
+// Terminals can't scale a glyph, so "bigger" = ASCII art. Each column is a
+// constant-width cell, so joining keeps every row the same length and the
+// letters stay aligned when centered. Rendered in the green-blue FOCUS color.
+const OMNI_CELLS: [[&str; 4]; 5] = [
+    ["       ", "           ", "       ", " _ "],
+    ["  ___  ", " _ __ ___  ", " _ __  ", "(_)"],
+    [" / _ \\ ", "| '_ ` _ \\ ", "| '_ \\ ", "   "],
+    ["| (_) |", "| | | | | |", "| | | |", "| |"],
+    [" \\___/ ", "|_| |_| |_|", "|_| |_|", "|_|"],
+];
+
+fn empty(f: &mut Frame, app: &App, area: Rect) {
+    let items = app.home_items();
+    let sel = app.home_sel.min(items.len().saturating_sub(1));
+    let mut lines: Vec<Line> = OMNI_CELLS
+        .iter()
+        .map(|c| Line::from(Span::styled(c.join("  "), bold(FOCUS))).alignment(Alignment::Center))
+        .collect();
+    lines.push(Line::from(Span::styled("オムニ", sty(DIM))).alignment(Alignment::Center));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("run & watch many live coding sessions, side by side", sty(DIM))).alignment(Alignment::Center));
+    lines.push(Line::raw(""));
+    for (i, it) in items.iter().enumerate() {
+        if i == 1 {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled("RECENTS · 履歴", sty(FAINT))));
         }
+        let on = i == sel;
+        let marker = if on { Span::styled("▸ ", bold(FOCUS)) } else { Span::styled("  ", sty(DIM)) };
+        let row = match it {
+            None => Line::from(vec![
+                marker,
+                Span::styled("^n", bold(if on { FOCUS } else { TXT })),
+                Span::styled("   open a project", sty(if on { TXT } else { DIM })),
+            ]),
+            Some(p) => Line::from(vec![
+                marker,
+                Span::styled(format!("{} ", RECENT), sty(if on { FOCUS } else { FAINT })),
+                Span::styled(crate::recents::display(p), sty(if on { TXT } else { IDLE })),
+            ]),
+        };
+        lines.push(if on { row.style(Style::default().bg(INSET)) } else { row });
     }
     lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("↑↓ move · ⏎ open · ^n picker", sty(FAINT))).alignment(Alignment::Center));
     lines.push(Line::from(Span::styled("LEGEND  ● working  ◍ blocked  ○ idle  ✓ done  ⌖ focus", sty(FAINT))).alignment(Alignment::Center));
     let w = 64.min(area.width.saturating_sub(4));
     let h = (lines.len() as u16 + 2).min(area.height);
