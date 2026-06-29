@@ -63,7 +63,7 @@ fn help(f: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(Span::styled("run & watch live Claude Code sessions side by side", sty(DIM))),
         Line::raw(""),
-        keyline("^n", "new project — fuzzy picker over git repos"),
+        keyline("^n", "new project — pick a git repo or type any folder path"),
         keyline("i / ⏎", "type into the focused tile (insert)"),
         keyline("esc esc / ^\\", "back to nav mode"),
         keyline("↹ / arrows", "move focus between tiles"),
@@ -501,7 +501,7 @@ fn picker(f: &mut Frame, app: &App, area: Rect) {
         .border_style(sty(FOCUS))
         .style(Style::default().bg(PANEL))
         .title_top(Line::from(vec![Span::styled(format!("{} open project", SEARCH), bold(TXT)), Span::styled("  プロジェクトを開く", sty(FAINT))]).left_aligned())
-        .title_top(Line::from(Span::styled("scan ~ · git repos", sty(FAINT))).right_aligned());
+        .title_top(Line::from(Span::styled("git repos · or type a path", sty(FAINT))).right_aligned());
     let inner = block.inner(modal);
     f.render_widget(block, modal);
 
@@ -536,7 +536,11 @@ fn picker(f: &mut Frame, app: &App, area: Rect) {
         rows.push(line);
     }
     if rows.is_empty() {
-        rows.push(Line::from(Span::styled(" no git repos matched under ~", sty(FAINT))));
+        let msg = match crate::app::path_from_query(&p.query) {
+            Some(path) => format!(" ⏎ open {}", path.display()),
+            None => " no git repos matched — type a /… or ~/… path to open any folder".into(),
+        };
+        rows.push(Line::from(Span::styled(msg, sty(FAINT))));
     }
     f.render_widget(Paragraph::new(rows), chunks[2]);
 }

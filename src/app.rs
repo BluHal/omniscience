@@ -556,7 +556,7 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    launch_dir = p.selected().map(|pr| pr.abs.clone());
+                    launch_dir = p.selected().map(|pr| pr.abs.clone()).or_else(|| path_from_query(&p.query));
                 }
                 KeyCode::Backspace => {
                     p.query.pop();
@@ -584,6 +584,23 @@ impl App {
 pub fn find_projects() -> Vec<Proj> {
     let home = dirs::home_dir().unwrap_or_default();
     find_under(home.clone(), &home.to_string_lossy())
+}
+
+/// path_from_query is the picker's escape hatch: the scan only lists git repos,
+/// but if the query is an absolute (`/…`) or home-relative (`~/…`) path to an
+/// existing directory, open it verbatim — so any folder works, git or not.
+pub fn path_from_query(q: &str) -> Option<PathBuf> {
+    let q = q.trim();
+    let p = if let Some(rest) = q.strip_prefix("~/") {
+        dirs::home_dir()?.join(rest)
+    } else if q == "~" {
+        dirs::home_dir()?
+    } else if q.starts_with('/') {
+        PathBuf::from(q)
+    } else {
+        return None;
+    };
+    p.is_dir().then_some(p)
 }
 
 fn find_under(root: PathBuf, home_s: &str) -> Vec<Proj> {
@@ -706,6 +723,19 @@ mod tests {
         app.help = false;
         app.picker = Some(Picker { query: "pay".into(), all: Vec::new(), results: Vec::new(), cursor: 0, recent: Default::default() });
         term.draw(|f| crate::ui::draw(f, &mut app)).unwrap(); // picker (no matches)
+    }
+
+    // The picker's escape hatch: an existing /abs or ~/ dir opens verbatim; a
+    // bare fuzzy term or a non-existent path does not.
+    #[test]
+    fn path_from_query_opens_any_dir() {
+        let tmp = std::env::temp_dir().join(format!("omni-pfq-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(path_from_query(&tmp.to_string_lossy()), Some(tmp.clone()));
+        assert_eq!(path_from_query("  ~  "), dirs::home_dir()); // trimmed, ~ = home
+        assert_eq!(path_from_query("obsidian"), None); // no /~ prefix → fuzzy term, not a path
+        assert_eq!(path_from_query("/no/such/dir/here"), None); // path must exist
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

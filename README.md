@@ -53,7 +53,8 @@ this the way I wanted:
   appears live as a tile in its group, no restart.
 - 🔭 **Glance mode** — collapse every tile to a compact card to keep an eye on
   the whole board.
-- 🔎 **Project picker** — a fuzzy finder over the git repos under your home.
+- 🔎 **Project picker** — a fuzzy finder over the git repos under your home, or
+  type any `/…` or `~/…` path to open a non-git folder.
 
 ## Install
 
@@ -79,7 +80,7 @@ Open a project with `^n`, pick a repo, and Claude starts live in a tile. Press
 
 | Key | Action |
 |-----|--------|
-| `^n` | **new project** — fuzzy picker over git repos under `~`, opens Claude in a tile |
+| `^n` | **new project** — fuzzy picker over git repos under `~` (or type a `/…`/`~/…` path for any folder), opens Claude in a tile |
 | `i` / `⏎` | **type** into the focused tile (insert mode) |
 | `esc esc` / `^\` | back to **nav** mode without interrupting Claude (a lone `esc` still reaches it) |
 | `↹` · arrows | move **focus** between tiles |
