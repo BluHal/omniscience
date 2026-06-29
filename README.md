@@ -35,7 +35,6 @@ this the way I wanted:
   the dashboard, don't just read its status.
 - **Rooms that enforce isolation.** Agents on a shared feature collaborate on a
   private bus; unrelated projects stay mute to each other.
-- **Built exactly my way** — a personal daily-driver, lazygit-style.
 
 ## Features
 
