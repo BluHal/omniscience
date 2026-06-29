@@ -35,7 +35,6 @@ this the way I wanted:
   the dashboard, don't just read its status.
 - **Rooms that enforce isolation.** Agents on a shared feature collaborate on a
   private bus; unrelated projects stay mute to each other.
-- **Built exactly my way** — a personal daily-driver, lazygit-style.
 
 ## Features
 
@@ -45,6 +44,9 @@ this the way I wanted:
   tiles in one frame. A group can span multiple repos.
 - 🚦 **Status at a glance** — Claude hooks write `working / blocked / idle /
   done` to `state.db`; blocked agents float to the front and light up red.
+- 🪫 **Context meter** — each tile header shows the percent of the model's
+  context window still free (`NN% ctx`), read from the session transcript and
+  coloured green → blue → red as it runs down.
 - 📡 **Shared bus + broadcast** — each group gets an isolated [hcom](https://github.com/aannoo/hcom)
   bus so agents talk; one key broadcasts a decision to the whole group.
 - 🌱 **Dynamic spawn** — a Lead delegates with `omni spawn`, and the new agent
@@ -83,7 +85,10 @@ Open a project with `^n`, pick a repo, and Claude starts live in a tile. Press
 | `↹` · arrows | move **focus** between tiles |
 | `^b` | **broadcast** a decision to the focused tile's group (type, `⏎` to send) |
 | `z` | **glance** mode (compact keep-an-eye cards) |
+| `+` / `-` | **resize** the focused tile's column wider / narrower (`=` resets) |
 | `!` | **jump** to a blocked agent |
+| `m` | **minimize** the focused tile to the dock — its Claude keeps running (click a dock chip or `m` to restore) |
+| `x` | **close** the focused tile — ends its Claude |
 | `?` | help · `q` quit |
 
 On the welcome screen, use `↑`/`↓` to move between **open a project** and your

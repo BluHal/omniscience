@@ -31,7 +31,9 @@ pub struct Tile {
     pub is_lead: bool,
     pub status: String,
     pub activity: String,
+    pub context_left: i64, // percent of context window free, -1 if unknown
     pub project: PathBuf,
+    pub minimized: bool, // collapsed to the dock; its Claude keeps running
 }
 
 pub struct Proj {
@@ -67,6 +69,7 @@ pub struct App {
     pub home_sel: usize, // highlighted row on the welcome screen (when no tiles open)
     pub mode: Mode,
     pub glance: bool,
+    pub zoom: std::collections::HashMap<String, i32>, // group name → column-width nudge (+/-/=)
     pub help: bool,
     pub blink: bool,
     pub picker: Option<Picker>,
@@ -91,6 +94,7 @@ impl App {
             home_sel: 0,
             mode: Mode::Nav,
             glance: false,
+            zoom: std::collections::HashMap::new(),
             help: false,
             blink: false,
             picker: None,
@@ -120,6 +124,16 @@ impl App {
         out
     }
 
+    /// visible_groups is groups() with minimized tiles dropped (and groups that
+    /// become empty removed) — the grid only draws what isn't in the dock.
+    pub fn visible_groups(&self) -> Vec<(String, Vec<usize>)> {
+        self.groups()
+            .into_iter()
+            .map(|(n, idxs)| (n, idxs.into_iter().filter(|&i| !self.tiles[i].minimized).collect::<Vec<_>>()))
+            .filter(|(_, idxs)| !idxs.is_empty())
+            .collect()
+    }
+
     pub fn counts(&self) -> (usize, usize, usize) {
         let groups = self.groups().len();
         let agents = self.tiles.len();
@@ -137,6 +151,28 @@ impl App {
         }
         let n = self.tiles.len() as isize;
         self.focus = (((self.focus as isize) + d).rem_euclid(n)) as usize;
+    }
+
+    /// resize_focused widens (+) or narrows (-) the focused tile's group column by
+    /// nudging its Fill weight relative to the other groups; reset_zoom clears it.
+    fn resize_focused(&mut self, delta: i32) {
+        if let Some(g) = self.focused().map(|t| t.group.clone()) {
+            self.bump_zoom(&g, delta);
+        }
+    }
+
+    fn reset_zoom(&mut self) {
+        if let Some(g) = self.focused().map(|t| t.group.clone()) {
+            self.zoom.remove(&g);
+        }
+    }
+
+    /// bump_zoom adjusts a group's column nudge, clamped so a column can't vanish
+    /// or swallow the row. ponytail: stale entries from closed groups are harmless
+    /// (just unused), so no cleanup on group churn.
+    fn bump_zoom(&mut self, group: &str, delta: i32) {
+        let z = self.zoom.entry(group.to_string()).or_insert(0);
+        *z = (*z + delta).clamp(-8, 12);
     }
 
     /// home_items is the selectable list on the welcome screen: row 0 opens the
@@ -170,7 +206,38 @@ impl App {
     fn jump_blocked(&mut self) {
         if let Some(i) = self.tiles.iter().position(|t| t.status == "blocked") {
             self.focus = i;
+            self.tiles[i].minimized = false; // pull it out of the dock so you can answer
         }
+    }
+
+    /// close_focused ends the focused tile's Claude (Term's Drop kills the child)
+    /// and forgets it from the restore set. Unlike minimize, the process stops.
+    fn close_focused(&mut self) {
+        if self.focus >= self.tiles.len() {
+            return;
+        }
+        let id = self.tiles.remove(self.focus).id; // drop kills the PTY child
+        let _ = db::delete_session(&self.db, &id);
+        if self.focus >= self.tiles.len() && !self.tiles.is_empty() {
+            self.focus = self.tiles.len() - 1;
+        }
+    }
+
+    /// toggle_minimize collapses the focused tile to the dock (or restores it).
+    /// The Claude process keeps running either way — only its tile is hidden.
+    fn toggle_minimize(&mut self) {
+        if let Some(t) = self.tiles.get_mut(self.focus) {
+            t.minimized = !t.minimized;
+        }
+    }
+
+    /// enter_insert focuses-to-type: restores the tile if it was minimized (you
+    /// can't type into something you can't see), then switches to Insert.
+    fn enter_insert(&mut self) {
+        if let Some(t) = self.tiles.get_mut(self.focus) {
+            t.minimized = false;
+        }
+        self.mode = Mode::Insert;
     }
 
     pub fn firstblocked_label(&self) -> Option<String> {
@@ -193,6 +260,7 @@ impl App {
                 if let Some(s) = map.get(&t.id) {
                     t.status = s.status.clone();
                     t.activity = s.activity.clone();
+                    t.context_left = s.context_left;
                 }
             }
         }
@@ -277,7 +345,9 @@ impl App {
             is_lead: role == "lead",
             status: "starting".into(),
             activity: String::new(),
+            context_left: -1,
             project: dir,
+            minimized: false,
         });
         self.focus = self.tiles.len() - 1;
         Ok(())
@@ -380,17 +450,22 @@ impl App {
                 }
             }
             KeyCode::Char('z') => self.glance = !self.glance,
+            KeyCode::Char('+') => self.resize_focused(1),
+            KeyCode::Char('-') => self.resize_focused(-1),
+            KeyCode::Char('=') => self.reset_zoom(),
             KeyCode::Char('!') => self.jump_blocked(),
+            KeyCode::Char('m') if !home => self.toggle_minimize(),
+            KeyCode::Char('x') if !home => self.close_focused(),
             KeyCode::Char('i') => {
                 if !home {
-                    self.mode = Mode::Insert;
+                    self.enter_insert();
                 }
             }
             KeyCode::Enter => {
                 if home {
                     self.activate_home(cols, rows);
                 } else {
-                    self.mode = Mode::Insert;
+                    self.enter_insert();
                 }
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
@@ -444,7 +519,10 @@ impl App {
             .map(|&(i, _)| i);
         let Some(i) = hit else { return };
         match ev.kind {
-            MouseEventKind::Down(MouseButton::Left) => self.focus = i,
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.focus = i;
+                self.tiles[i].minimized = false; // clicking a dock chip restores it
+            }
             MouseEventKind::ScrollUp => self.tiles[i].term.scroll(3),
             MouseEventKind::ScrollDown => self.tiles[i].term.scroll(-3),
             _ => {}
@@ -559,6 +637,7 @@ mod tests {
             home_sel: 0,
             mode: Mode::Nav,
             glance: false,
+            zoom: std::collections::HashMap::new(),
             help: false,
             blink: false,
             picker: None,
@@ -596,6 +675,21 @@ mod tests {
         assert!(matches!(app.mode, Mode::Insert), "a single esc stays in insert");
         app.on_key(esc, 80, 24).unwrap();
         assert!(matches!(app.mode, Mode::Nav), "a quick double esc returns to nav");
+    }
+
+    // +/- nudge a group's column weight; the nudge clamps so a column can't
+    // vanish or run away.
+    #[test]
+    fn resize_bumps_and_clamps_zoom() {
+        let mut app = test_app();
+        app.bump_zoom("alpha", 3);
+        assert_eq!(app.zoom["alpha"], 3);
+        app.bump_zoom("alpha", -5);
+        assert_eq!(app.zoom["alpha"], -2);
+        for _ in 0..40 { app.bump_zoom("alpha", 1); }
+        assert_eq!(app.zoom["alpha"], 12, "clamps at the ceiling");
+        for _ in 0..40 { app.bump_zoom("alpha", -1); }
+        assert_eq!(app.zoom["alpha"], -8, "clamps at the floor");
     }
 
     // Headless render smoke test: the non-terminal screens (empty + recents,

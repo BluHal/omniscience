@@ -43,16 +43,68 @@ fn run_hook(event: &str) {
         return;
     }
     let mut tool = String::new();
-    if event == "pre" {
-        let mut buf = String::new();
-        if std::io::stdin().read_to_string(&mut buf).is_ok() {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&buf) {
+    let mut ctx: Option<i64> = None;
+    let mut buf = String::new();
+    if std::io::stdin().read_to_string(&mut buf).is_ok() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&buf) {
+            if event == "pre" {
                 tool = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            }
+            // Claude passes the conversation transcript path on every hook; the
+            // latest turn's token usage tells us how much context is left.
+            if let Some(p) = v.get("transcript_path").and_then(|t| t.as_str()) {
+                ctx = std::fs::read_to_string(p).ok().and_then(|t| context_left_pct(&t));
             }
         }
     }
     if let Ok(conn) = db::open(&db::db_path()) {
         let _ = db::apply_event(&conn, &id, event, &tool);
+        if let Some(left) = ctx {
+            let _ = db::set_context_left(&conn, &id, left);
+        }
+    }
+}
+
+/// CONTEXT_WINDOW is the token budget "context left" is measured against. Claude's
+/// default context is 200k. ponytail: a const knob — bump for 1M-context models.
+const CONTEXT_WINDOW: f64 = 200_000.0;
+
+/// context_left_pct reads a Claude transcript (JSONL) and returns the percent of
+/// the context window still free, from the most recent main-chain assistant turn's
+/// usage. None when there's no usage yet (a fresh session).
+fn context_left_pct(transcript: &str) -> Option<i64> {
+    for line in transcript.lines().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("isSidechain").and_then(|x| x.as_bool()) == Some(true) {
+            continue; // subagent turn — not the main context
+        }
+        let Some(u) = v.get("message").and_then(|m| m.get("usage")) else { continue };
+        let tok = |k| u.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let used = tok("input_tokens") + tok("cache_read_input_tokens") + tok("cache_creation_input_tokens");
+        if used <= 0.0 {
+            continue;
+        }
+        return Some((((1.0 - used / CONTEXT_WINDOW) * 100.0).round() as i64).clamp(0, 100));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The token math: latest main-chain usage drives the percent, sidechain
+    // (subagent) turns are ignored, and a usage-less transcript is unknown.
+    #[test]
+    fn context_left_from_usage() {
+        let t = concat!(
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":50000,"cache_creation_input_tokens":10000}}}"#, "\n",
+            r#"{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":190000}}}"#, "\n",
+        );
+        // used = 60010 of 200000 → ~70% left; sidechain line ignored
+        assert_eq!(context_left_pct(t), Some(70));
+        assert_eq!(context_left_pct(r#"{"type":"user","message":{"role":"user"}}"#), None);
+        assert_eq!(context_left_pct(""), None);
     }
 }
 

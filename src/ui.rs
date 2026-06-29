@@ -21,9 +21,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.tile_areas.clear();
     f.render_widget(Block::default().style(Style::default().bg(SCREEN)), area);
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).split(area);
+    let has_dock = app.tiles.iter().any(|t| t.minimized);
+    let rows = if has_dock {
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1), Constraint::Length(1)]).split(area)
+    } else {
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).split(area)
+    };
     top_bar(f, app, rows[0]);
     let body = rows[1];
+    let bar = rows[rows.len() - 1];
 
     let picker_open = app.picker.is_some();
     if app.tiles.is_empty() && !picker_open {
@@ -33,10 +39,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         hero(f, app, body);
     }
+    if has_dock {
+        dock(f, app, rows[2]);
+    }
     if app.compose.is_some() {
-        compose_bar(f, app, rows[2]);
+        compose_bar(f, app, bar);
     } else {
-        footer(f, app, rows[2]);
+        footer(f, app, bar);
     }
     if picker_open {
         picker(f, app, body);
@@ -60,7 +69,10 @@ fn help(f: &mut Frame, area: Rect) {
         keyline("↹ / arrows", "move focus between tiles"),
         keyline("^b", "broadcast a decision to the group"),
         keyline("z", "glance mode (compact keep-an-eye cards)"),
+        keyline("+ / -", "resize focused tile's column · = reset"),
         keyline("!", "jump to a blocked agent"),
+        keyline("m", "minimize tile to the dock (Claude keeps running)"),
+        keyline("x", "close tile (ends its Claude)"),
         keyline("q", "quit"),
         Line::raw(""),
         Line::from(Span::styled("  a Lead delegates with:", sty(FAINT))),
@@ -179,7 +191,10 @@ fn footer(f: &mut Frame, app: &App, area: Rect) {
         for s in hint("↹", "focus", TXT) { spans.push(s); }
         for s in hint("i/⏎", "type", TXT) { spans.push(s); }
         for s in hint("z", "glance", TXT) { spans.push(s); }
+        for s in hint("+/-", "size", TXT) { spans.push(s); }
         for s in hint("^n", "new", TXT) { spans.push(s); }
+        for s in hint("m", "min", TXT) { spans.push(s); }
+        for s in hint("x", "close", TXT) { spans.push(s); }
         for s in hint("^b", "broadcast", CAST) { spans.push(s); }
         for s in hint("?", "help", TXT) { spans.push(s); }
         for s in hint("q", "quit", TXT) { spans.push(s); }
@@ -255,31 +270,80 @@ fn empty(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines), Rect { x: inner.x + 2, width: inner.width.saturating_sub(4), ..inner });
 }
 
+/// col_weights builds each group's column Fill weight: a base (wider for groups
+/// with more agents in hero, uniform in glance) nudged by the user's +/- resize
+/// (App::zoom), clamped so a column never vanishes or swallows the whole row.
+fn col_weights(app: &App, groups: &[(String, Vec<usize>)], by_size: bool) -> Vec<Constraint> {
+    groups
+        .iter()
+        .map(|(name, idxs)| {
+            let base = if by_size { idxs.len() as i32 } else { 1 };
+            let w = (base + app.zoom.get(name).copied().unwrap_or(0)).clamp(1, 20) as u16;
+            Constraint::Fill(w)
+        })
+        .collect()
+}
+
 fn hero(f: &mut Frame, app: &mut App, area: Rect) {
-    let groups = app.groups();
+    let groups = app.visible_groups();
     if groups.is_empty() {
+        all_minimized_hint(f, area);
         return;
     }
-    let constraints: Vec<Constraint> = groups
-        .iter()
-        .map(|(_, idxs)| Constraint::Fill(1 + idxs.len().saturating_sub(1) as u16))
-        .collect();
-    let cols = Layout::horizontal(constraints).spacing(1).split(area);
+    let cols = Layout::horizontal(col_weights(app, &groups, true)).spacing(1).split(area);
     for (gi, (name, idxs)) in groups.iter().enumerate() {
         group_frame(f, app, name, idxs, cols[gi], false);
     }
 }
 
 fn glance(f: &mut Frame, app: &mut App, area: Rect) {
-    let groups = app.groups();
+    let groups = app.visible_groups();
     if groups.is_empty() {
+        all_minimized_hint(f, area);
         return;
     }
-    let constraints: Vec<Constraint> = groups.iter().map(|_| Constraint::Fill(1)).collect();
-    let cols = Layout::horizontal(constraints).spacing(1).split(area);
+    let cols = Layout::horizontal(col_weights(app, &groups, false)).spacing(1).split(area);
     for (gi, (name, idxs)) in groups.iter().enumerate() {
         group_frame(f, app, name, idxs, cols[gi], true);
     }
+}
+
+/// dock draws the strip of minimized tiles as chips (status glyph + group/role),
+/// each registered in tile_areas so a click restores it. The focused chip is
+/// highlighted; a blocked tile still shows its red glyph here so you don't miss it.
+fn dock(f: &mut Frame, app: &mut App, area: Rect) {
+    f.render_widget(Block::default().style(Style::default().bg(BAR)), area);
+    let label = " ▽ minimized  ";
+    f.render_widget(Paragraph::new(Line::from(Span::styled(label, sty(DIM)))).style(Style::default().bg(BAR)), area);
+    let mins: Vec<usize> = (0..app.tiles.len()).filter(|&i| app.tiles[i].minimized).collect();
+    let mut x = area.x + label.chars().count() as u16;
+    for i in mins {
+        let (group, role, status, focused) = {
+            let t = &app.tiles[i];
+            (t.group.clone(), t.role.clone(), t.status.clone(), i == app.focus)
+        };
+        let text = format!(" {} {}/{} ", status_glyph(&status), group, role);
+        let w = text.chars().count() as u16;
+        if x + w > area.x + area.width {
+            break;
+        }
+        let r = Rect { x, y: area.y, width: w, height: 1 };
+        app.tile_areas.push((i, r)); // click-to-restore
+        let style = if focused {
+            Style::default().bg(INSET).fg(FOCUS).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().bg(BAR).fg(status_color(&status))
+        };
+        f.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), r);
+        x += w + 1;
+    }
+}
+
+/// all_minimized_hint fills the body when every tile is in the dock.
+fn all_minimized_hint(f: &mut Frame, area: Rect) {
+    let line = Line::from(Span::styled("all tiles minimized · click a dock chip or press m to restore", sty(FAINT))).alignment(Alignment::Center);
+    let mid = Rect { y: area.y + area.height / 2, height: 1, ..area };
+    f.render_widget(Paragraph::new(line).alignment(Alignment::Center), mid);
 }
 
 fn group_frame(f: &mut Frame, app: &mut App, name: &str, idxs: &[usize], area: Rect, compact: bool) {
@@ -406,9 +470,14 @@ fn tile_header(t: &Tile, focused: bool, blink: bool) -> (Line<'static>, Line<'st
     let right = if t.status == "blocked" {
         Line::from(Span::styled(" BLOCKED 要対応 ", Style::default().bg(BLOCK).fg(SCREEN).add_modifier(Modifier::BOLD)))
     } else {
-        Line::from(vec![
-            Span::styled(format!("{} {}", status_glyph(&t.status), t.status), sty(sc)),
-        ])
+        let mut spans = Vec::new();
+        if t.context_left >= 0 {
+            let cc = if t.context_left <= 15 { BLOCK } else if t.context_left <= 40 { IDLE } else { DONE };
+            spans.push(Span::styled(format!("{}% ctx", t.context_left), bold(cc)));
+            spans.push(Span::styled(" · ", sty(FAINT)));
+        }
+        spans.push(Span::styled(format!("{} {}", status_glyph(&t.status), t.status), sty(sc)));
+        Line::from(spans)
     };
     (Line::from(left), right)
 }
