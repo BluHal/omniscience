@@ -28,6 +28,9 @@ pub fn open(path: &std::path::Path) -> Result<Connection> {
             status TEXT, current_activity TEXT, started_at INTEGER, last_event_at INTEGER)",
         [],
     )?;
+    // context_left: percent of the context window still free (-1 = unknown).
+    // Added later, so ALTER on existing dbs; the error when it already exists is fine.
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN context_left INTEGER DEFAULT -1", []);
     conn.execute(
         "CREATE TABLE IF NOT EXISTS spawn_requests(
             id INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT, role TEXT,
@@ -81,6 +84,14 @@ pub fn apply_event(conn: &Connection, id: &str, event: &str, tool: &str) -> Resu
 pub struct Status {
     pub status: String,
     pub activity: String,
+    pub context_left: i64, // percent of context window free, -1 if unknown
+}
+
+/// set_context_left records how much of the context window a session has left,
+/// derived from its transcript by the hook.
+pub fn set_context_left(conn: &Connection, id: &str, left: i64) -> Result<()> {
+    conn.execute("UPDATE sessions SET context_left=?2 WHERE id=?1", rusqlite::params![id, left])?;
+    Ok(())
 }
 
 /// A session to restore on the next omni start: enough to re-launch the agent
@@ -118,11 +129,15 @@ pub fn delete_session(conn: &Connection, id: &str) -> Result<()> {
 
 /// statuses returns id → (status, activity) for every known session.
 pub fn statuses(conn: &Connection) -> Result<HashMap<String, Status>> {
-    let mut stmt = conn.prepare("SELECT id, status, current_activity FROM sessions")?;
+    let mut stmt = conn.prepare("SELECT id, status, current_activity, context_left FROM sessions")?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
-            Status { status: r.get::<_, String>(1)?, activity: r.get::<_, String>(2)? },
+            Status {
+                status: r.get::<_, String>(1)?,
+                activity: r.get::<_, String>(2)?,
+                context_left: r.get::<_, i64>(3).unwrap_or(-1),
+            },
         ))
     })?;
     let mut out = HashMap::new();
