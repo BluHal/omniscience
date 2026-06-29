@@ -13,6 +13,10 @@ use rusqlite::Connection;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// How long to hold a first Esc before deciding it was lone (forward as interrupt)
+/// or the start of an Esc-Esc detach (a second arrived → go to Nav, drop both).
+const ESC_WINDOW: Duration = Duration::from_millis(400);
+
 #[derive(PartialEq, Clone, Copy)]
 pub enum Mode {
     Nav,
@@ -60,6 +64,7 @@ impl Picker {
 pub struct App {
     pub tiles: Vec<Tile>,
     pub focus: usize,
+    pub home_sel: usize, // highlighted row on the welcome screen (when no tiles open)
     pub mode: Mode,
     pub glance: bool,
     pub help: bool,
@@ -71,6 +76,7 @@ pub struct App {
     settings: PathBuf,
     bus_dirs: std::collections::HashMap<String, PathBuf>, // group → its shared hcom bus dir
     last_poll: Instant,
+    last_esc: Option<Instant>, // for Esc-Esc detach in Insert mode
     pub tile_areas: Vec<(usize, Rect)>, // populated each frame for mouse hit-testing
 }
 
@@ -82,6 +88,7 @@ impl App {
         Ok(App {
             tiles: Vec::new(),
             focus: 0,
+            home_sel: 0,
             mode: Mode::Nav,
             glance: false,
             help: false,
@@ -93,6 +100,7 @@ impl App {
             settings,
             bus_dirs: std::collections::HashMap::new(),
             last_poll: Instant::now() - Duration::from_secs(1),
+            last_esc: None,
             tile_areas: Vec::new(),
         })
     }
@@ -129,6 +137,34 @@ impl App {
         }
         let n = self.tiles.len() as isize;
         self.focus = (((self.focus as isize) + d).rem_euclid(n)) as usize;
+    }
+
+    /// home_items is the selectable list on the welcome screen: row 0 opens the
+    /// picker (None), the rest each open a recent project (Some(path)). The UI
+    /// renders this and `home_sel` highlights one; Enter activates it.
+    pub fn home_items(&self) -> Vec<Option<PathBuf>> {
+        let mut items = vec![None];
+        items.extend(crate::recents::list().into_iter().take(6).map(Some));
+        items
+    }
+
+    fn home_move(&mut self, d: isize) {
+        let n = self.home_items().len() as isize;
+        if n <= 1 {
+            self.home_sel = 0;
+            return;
+        }
+        self.home_sel = (((self.home_sel as isize) + d).rem_euclid(n)) as usize;
+    }
+
+    fn activate_home(&mut self, cols: u16, rows: u16) {
+        match self.home_items().get(self.home_sel).cloned() {
+            Some(None) => self.open_picker(),
+            Some(Some(dir)) if dir.is_dir() => {
+                let _ = self.open_project(dir, cols, rows);
+            }
+            _ => {}
+        }
     }
 
     fn jump_blocked(&mut self) {
@@ -288,16 +324,51 @@ impl App {
                     || k.code == KeyCode::Char('\x1c'); // 0x1c = raw Ctrl+\ byte
                 if back {
                     self.mode = Mode::Nav;
-                } else if let Some(t) = self.tiles.get_mut(self.focus) {
-                    t.term.write_input(&encode_key(k));
+                    self.last_esc = None;
+                } else if k.code == KeyCode::Esc {
+                    // Esc-Esc (quick double-tap) detaches to nav WITHOUT interrupting
+                    // Claude: the first Esc is HELD (not forwarded), a second within the
+                    // window detaches and discards it, so the running turn is untouched.
+                    // A lone Esc is flushed to Claude as an interrupt once the window
+                    // closes (see flush_pending_esc). ponytail: 400ms window, flushed
+                    // from the loop tick — the small interrupt delay is imperceptible.
+                    let now = Instant::now();
+                    if self.last_esc.is_some_and(|t| now.duration_since(t) < ESC_WINDOW) {
+                        self.mode = Mode::Nav;
+                        self.last_esc = None;
+                    } else {
+                        self.last_esc = Some(now); // held; flushed as a lone Esc if no second
+                    }
+                } else {
+                    self.last_esc = None;
+                    if let Some(t) = self.tiles.get_mut(self.focus) {
+                        t.term.write_input(&encode_key(k));
+                    }
                 }
             }
         }
         Ok(())
     }
 
+    /// flush_pending_esc forwards a held lone Esc to Claude once the Esc-Esc window
+    /// closes (had a second Esc arrived it would have detached to Nav instead). Run
+    /// each loop tick so a single Esc still reaches Claude as an interrupt.
+    pub fn flush_pending_esc(&mut self) {
+        if self.mode != Mode::Insert {
+            self.last_esc = None;
+            return;
+        }
+        if self.last_esc.is_some_and(|t| t.elapsed() >= ESC_WINDOW) {
+            self.last_esc = None;
+            if let Some(t) = self.tiles.get_mut(self.focus) {
+                t.term.write_input(&[0x1b]);
+            }
+        }
+    }
+
     fn nav_key(&mut self, k: KeyEvent, cols: u16, rows: u16) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let home = self.tiles.is_empty(); // the welcome screen is showing
         match k.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('c') if ctrl => self.should_quit = true,
@@ -311,21 +382,31 @@ impl App {
             KeyCode::Char('z') => self.glance = !self.glance,
             KeyCode::Char('!') => self.jump_blocked(),
             KeyCode::Char('i') => {
-                if !self.tiles.is_empty() {
+                if !home {
                     self.mode = Mode::Insert;
                 }
             }
             KeyCode::Enter => {
-                if !self.tiles.is_empty() {
+                if home {
+                    self.activate_home(cols, rows);
+                } else {
                     self.mode = Mode::Insert;
-                } else if let Some(last) = crate::recents::list().into_iter().next() {
-                    if last.is_dir() {
-                        let _ = self.open_project(last, cols, rows);
-                    }
                 }
             }
-            KeyCode::Tab | KeyCode::Right | KeyCode::Down => self.move_focus(1),
-            KeyCode::BackTab | KeyCode::Left | KeyCode::Up => self.move_focus(-1),
+            KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
+                if home {
+                    self.home_move(1);
+                } else {
+                    self.move_focus(1);
+                }
+            }
+            KeyCode::BackTab | KeyCode::Left | KeyCode::Up => {
+                if home {
+                    self.home_move(-1);
+                } else {
+                    self.move_focus(-1);
+                }
+            }
             _ => {}
         }
     }
@@ -475,6 +556,7 @@ mod tests {
         App {
             tiles: Vec::new(),
             focus: 0,
+            home_sel: 0,
             mode: Mode::Nav,
             glance: false,
             help: false,
@@ -486,8 +568,34 @@ mod tests {
             settings: PathBuf::new(),
             bus_dirs: std::collections::HashMap::new(),
             last_poll: Instant::now(),
+            last_esc: None,
             tile_areas: Vec::new(),
         }
+    }
+
+    // The welcome-screen cursor wraps within home_items, and row 0 is the picker.
+    #[test]
+    fn home_cursor_wraps_over_items() {
+        let mut app = test_app();
+        assert_eq!(app.home_items().first(), Some(&None)); // row 0 = open picker
+        let n = app.home_items().len();
+        app.home_sel = 0;
+        app.home_move(-1);
+        assert_eq!(app.home_sel, n - 1); // up from the top wraps to the bottom
+        app.home_move(1);
+        assert_eq!(app.home_sel, 0); // and back round to the top
+    }
+
+    // Esc-Esc detaches Insert→Nav; a lone Esc does not (it goes to Claude).
+    #[test]
+    fn double_esc_exits_insert() {
+        let mut app = test_app();
+        app.mode = Mode::Insert;
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.on_key(esc, 80, 24).unwrap();
+        assert!(matches!(app.mode, Mode::Insert), "a single esc stays in insert");
+        app.on_key(esc, 80, 24).unwrap();
+        assert!(matches!(app.mode, Mode::Nav), "a quick double esc returns to nav");
     }
 
     // Headless render smoke test: the non-terminal screens (empty + recents,
@@ -586,6 +694,7 @@ pub fn run_loop(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 _ => {}
             }
         }
+        app.flush_pending_esc();
         app.poll(tw, th);
         app.reap_exited();
     }

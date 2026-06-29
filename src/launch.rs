@@ -30,9 +30,11 @@ fn launch_prompt(spec: &LaunchSpec) -> String {
         Some(b) if !b.trim().is_empty() => b.trim().to_string(),
         _ => format!(
             "await the user's instructions, then work in this project. To run sub-tasks \
-             in parallel as separate live agents, run:  omni spawn {} <role> [brief]  \
-             (add --dir <path> to place an agent in another repo) — each appears as its \
-             own tile on your team's shared bus.",
+             in parallel as separate live agents, spawn ONLY with:  omni spawn {} <role> \
+             [brief]  (add --dir <path> for another repo) — each shows up as its own live \
+             tile here on the shared bus. Do NOT launch agents with hcom's own launcher \
+             (`hcom <N> claude`, `hcom spawn`, `hcom r`/`hcom f`): that opens a detached \
+             terminal outside this dashboard, so the agent never appears as a tile.",
             spec.room
         ),
     };
@@ -49,6 +51,8 @@ pub fn claude_command(spec: &LaunchSpec) -> CommandBuilder {
     cmd.env("OMNI_DB", crate::db::db_path().to_string_lossy().to_string());
     cmd.env("HCOM_DIR", spec.hcom_dir.to_string_lossy().to_string());
     cmd.env("HCOM_TAG", &spec.role);
+    // (No HCOM_TIMEOUT here: hcom ignores it for PTY-hosted agents. The blocking
+    // idle poll is removed at the source — its Stop hook is dropped in hooks.rs.)
     cmd.arg("--settings");
     cmd.arg(spec.settings.to_string_lossy().to_string());
     if spec.resume {

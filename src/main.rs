@@ -94,7 +94,7 @@ fn print_help() {
   omni hook  <event>       (internal: Claude Code status hook)
 
   ^n  new project (picker)    i / ⏎  type into focused tile
-  ^\  back to nav             ↹      move focus
+  esc esc  back to nav        ↹      move focus
   z   glance mode             ^b     broadcast        ! jump to blocked    q quit
 "#
     );
